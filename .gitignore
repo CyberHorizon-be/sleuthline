@@ -1,0 +1,6 @@
+# KAPE license: redistribution forbidden (each user drops their own kape.zip in install\)
+install/kape.zip
+# API keys (only the api_keys_template.txt template is versioned)
+pipeline/config/api_keys.txt
+__pycache__/
+*.pyc

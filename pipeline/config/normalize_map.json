@@ -1,0 +1,3793 @@
+{
+ "version": "2.0",
+ "description": "Mapping of parsing outputs -> DuckDB timeline / detections. Source of truth: <repository>\\pipeline\\config\\normalize_map.json. See the README (Normalization) for the format.",
+ "defaults": {
+  "min_ts": "1980-01-01",
+  "max_years_ahead": 1,
+  "ignore_time_fields": [
+   "expiration_time",
+   "expire_time",
+   "expires",
+   "start_boundary",
+   "end_boundary",
+   "_generated"
+  ]
+ },
+ "skip": [
+  {
+   "glob": "logfileparser/*/debug.log",
+   "reason": "LogFileParser log"
+  },
+  {
+   "glob": [
+    "logfileparser/*/LogFile_AllTransactionHeaders.csv",
+    "logfileparser/*/LogFile_RCRD.csv",
+    "logfileparser/*/LogFile_DirtyPageTable*.csv",
+    "logfileparser/*/LogFile_BitsInNonresidentBitMap.csv",
+    "logfileparser/*/LogFile_OpenAttributeTable.csv",
+    "logfileparser/*/LogFile_SlackOpenAttributeTable.csv",
+    "logfileparser/*/LogFile_SlackAttributeNamesDump.csv",
+    "logfileparser/*/LogFile_CheckpointRecord.csv",
+    "logfileparser/*/LogFile_TransactionTable.csv",
+    "logfileparser/*/LogFile_SecureSDH.csv",
+    "logfileparser/*/LogFile_SecureSII.csv"
+   ],
+   "reason": "internal structures of the NTFS journal (pages, transaction tables): no analytical information; available in parsed\\"
+  },
+  {
+   "glob": [
+    "logfileparser/*/*.sql",
+    "logfileparser/*/*.empty",
+    "logfileparser/*/*.bin",
+    "logfileparser/*/*.db",
+    "logfileparser/*/LogFile_Mft_Data.txt"
+   ],
+   "reason": "LogFileParser technical files"
+  },
+  {
+   "glob": [
+    "*/*.log",
+    "*/!*.txt"
+   ],
+   "reason": "tool execution log (not an artifact output)"
+  },
+  {
+   "glob": "plaso_*/*.plaso",
+   "reason": "intermediate plaso storage (the json_line output is loaded)"
+  }
+ ],
+ "sources": [
+  {
+   "id": "mft",
+   "glob": [
+    "mftecmd_mft/*.csv"
+   ],
+   "artifact": "$MFT",
+   "category": "file system",
+   "tool": "MFTECmd",
+   "times": [
+    {
+     "ts": "\"Created0x10\"",
+     "desc": "$SI creation (B)"
+    },
+    {
+     "ts": "\"LastModified0x10\"",
+     "desc": "$SI modification (M)"
+    },
+    {
+     "ts": "\"LastAccess0x10\"",
+     "desc": "$SI access (A)"
+    },
+    {
+     "ts": "\"LastRecordChange0x10\"",
+     "desc": "$SI MFT change (C)"
+    },
+    {
+     "ts": "\"Created0x30\"",
+     "desc": "$FN creation (B)"
+    },
+    {
+     "ts": "\"LastModified0x30\"",
+     "desc": "$FN modification (M)"
+    },
+    {
+     "ts": "\"LastAccess0x30\"",
+     "desc": "$FN access (A)"
+    },
+    {
+     "ts": "\"LastRecordChange0x30\"",
+     "desc": "$FN MFT change (C)"
+    }
+   ],
+   "path": "vol_path(\"ParentPath\" || '\\' || \"FileName\", \"SourceFile\")",
+   "description": "concat_ws(' ', CASE WHEN \"IsDirectory\" = 'True' THEN '[folder]' END, 'size=' || \"FileSize\", CASE WHEN \"InUse\" = 'False' THEN '[free/deleted record]' END, CASE WHEN \"SI<FN\" = 'True' THEN '[SI<FN: possible timestomping]' END, CASE WHEN \"uSecZeros\" = 'True' THEN '[zero µs]' END, CASE WHEN \"ZoneIdContents\" IS NOT NULL THEN 'Zone.Identifier: ' || replace(replace(\"ZoneIdContents\", chr(13), ''), chr(10), ' ') END)",
+   "evidence": "orig_path(\"SourceFile\")",
+   "note": "MFTECmd only provides the $FN dates when they differ from the $SI ones."
+  },
+  {
+   "id": "usnjrnl",
+   "glob": [
+    "mftecmd_usnjrnl/*.csv"
+   ],
+   "artifact": "$UsnJrnl:$J",
+   "category": "file system",
+   "tool": "MFTECmd",
+   "times": [
+    {
+     "ts": "\"UpdateTimestamp\"",
+     "desc": "USN $J"
+    }
+   ],
+   "path": "vol_path(\"ParentPath\" || '\\' || \"Name\", \"SourceFile\")",
+   "description": "concat_ws(' ', \"UpdateReasons\", '[' || \"FileAttributes\" || ']', 'entry=' || \"EntryNumber\" || '-' || \"SequenceNumber\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "mft_boot",
+   "glob": [
+    "mftecmd_boot/*.csv"
+   ],
+   "artifact": "$Boot",
+   "category": "file system",
+   "tool": "MFTECmd",
+   "times": [],
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "mft_sds",
+   "glob": [
+    "mftecmd_sds/*.csv"
+   ],
+   "artifact": "$Secure:$SDS",
+   "category": "file system",
+   "tool": "MFTECmd",
+   "times": [],
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "logfile_usn",
+   "glob": [
+    "logfileparser/*/LogFile_lfUsnJrnl.csv"
+   ],
+   "artifact": "$LogFile (reconstructed USN)",
+   "category": "file system",
+   "tool": "LogFileParser",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "USN reconstructed from $LogFile"
+    }
+   ],
+   "csv": {
+    "delim": "|",
+    "quote": "",
+    "escape": ""
+   },
+   "path": [
+    "FileName"
+   ],
+   "description": "concat_ws(' ', \"Reason\", '[' || \"FileAttributes\" || ']', 'MFT=' || \"MFTReference\" || '-' || \"MFTReferenceSeqNo\", 'parent=' || \"MFTParentReference\")",
+   "evidence": "'C:\\$LogFile'"
+  },
+  {
+   "id": "logfile_si",
+   "glob": [
+    "logfileparser/*/LogFile_Mft_StandardInformation.csv"
+   ],
+   "artifact": "$LogFile ($SI)",
+   "category": "file system",
+   "tool": "LogFileParser",
+   "times": [],
+   "csv": {
+    "delim": "|",
+    "quote": "",
+    "escape": ""
+   },
+   "evidence": "'C:\\$LogFile'",
+   "note": "Successive logged $SI values: raw table only (very large, useful for timestomping)."
+  },
+  {
+   "id": "logfile",
+   "glob": [
+    "logfileparser/*/LogFile.csv"
+   ],
+   "artifact": "$LogFile",
+   "category": "file system",
+   "tool": "LogFileParser",
+   "times": [],
+   "csv": {
+    "delim": "|",
+    "quote": "",
+    "escape": ""
+   },
+   "evidence": "'C:\\$LogFile'",
+   "note": "Main LogFileParser table: raw only (its dates are used in lfUsnJrnl and StandardInformation)."
+  },
+  {
+   "id": "logfile_i30",
+   "glob": [
+    "logfileparser/*/LogFile_INDX_I30.csv",
+    "logfileparser/*/LogFile_UpdateFileName_I30.csv"
+   ],
+   "artifact": "$LogFile (index $I30)",
+   "category": "file system",
+   "tool": "LogFileParser",
+   "times": [],
+   "csv": {
+    "delim": "|",
+    "quote": "",
+    "escape": ""
+   },
+   "evidence": "'C:\\$LogFile'",
+   "note": "Raw table."
+  },
+  {
+   "id": "logfile_misc",
+   "glob": [
+    "logfileparser/*/LogFile_FileNames.csv",
+    "logfileparser/*/LogFile_AttributeList.csv",
+    "logfileparser/*/LogFile_ObjIdO.csv",
+    "logfileparser/*/LogFile_Mft_ObjectId_Entries.csv",
+    "logfileparser/*/LogFile_SecurityDescriptors.csv",
+    "logfileparser/*/LogFile_ReparseR.csv",
+    "logfileparser/*/LogFile_QuotaO.csv",
+    "logfileparser/*/LogFile_QuotaQ.csv",
+    "logfileparser/*/LogFile_TxfData.csv"
+   ],
+   "artifact": "$LogFile (miscellaneous)",
+   "category": "file system",
+   "tool": "LogFileParser",
+   "times": [],
+   "table": "logfile_misc",
+   "csv": {
+    "delim": "|",
+    "quote": "",
+    "escape": ""
+   },
+   "evidence": "'C:\\$LogFile'",
+   "note": "Raw tables."
+  },
+  {
+   "id": "prefetch_timeline",
+   "glob": [
+    "pecmd/*_Timeline.csv"
+   ],
+   "artifact": "Prefetch (timeline view)",
+   "category": "execution",
+   "tool": "PECmd",
+   "times": [],
+   "note": "Same dates as prefetch (LastRun/PreviousRun): raw table only to avoid duplicates."
+  },
+  {
+   "id": "prefetch",
+   "glob": [
+    "pecmd/prefetch_*.csv"
+   ],
+   "artifact": "Prefetch",
+   "category": "execution",
+   "tool": "PECmd",
+   "times": [
+    {
+     "ts": "\"LastRun\"",
+     "desc": "Execution (Prefetch, last)"
+    },
+    {
+     "ts": "\"PreviousRun0\"",
+     "desc": "Execution (Prefetch, previous)"
+    },
+    {
+     "ts": "\"PreviousRun1\"",
+     "desc": "Execution (Prefetch, previous)"
+    },
+    {
+     "ts": "\"PreviousRun2\"",
+     "desc": "Execution (Prefetch, previous)"
+    },
+    {
+     "ts": "\"PreviousRun3\"",
+     "desc": "Execution (Prefetch, previous)"
+    },
+    {
+     "ts": "\"PreviousRun4\"",
+     "desc": "Execution (Prefetch, previous)"
+    },
+    {
+     "ts": "\"PreviousRun5\"",
+     "desc": "Execution (Prefetch, previous)"
+    },
+    {
+     "ts": "\"PreviousRun6\"",
+     "desc": "Execution (Prefetch, previous)"
+    }
+   ],
+   "where": "\"SourceFilename\" IS NOT NULL",
+   "path": [
+    "ExecutableName"
+   ],
+   "description": "concat_ws(' ', 'runs=' || \"RunCount\", 'hash=' || \"Hash\", \"Note\", \"ParsingError\")",
+   "evidence": "orig_path(\"SourceFilename\")",
+   "note": "SourceCreated/SourceAccessed are not used (dates of the collected .pf file, access is modified by parsing)."
+  },
+  {
+   "id": "shimcache",
+   "glob": [
+    "appcompatcache/*.csv"
+   ],
+   "artifact": "ShimCache (AppCompatCache)",
+   "category": "execution",
+   "tool": "AppCompatCacheParser",
+   "times": [
+    {
+     "ts": "\"LastModifiedTimeUTC\"",
+     "desc": "ShimCache: file modification date (not proof of execution)"
+    }
+   ],
+   "path": [
+    "Path"
+   ],
+   "description": "concat_ws(' ', 'position=' || \"CacheEntryPosition\", 'Executed=' || \"Executed\", 'ControlSet=' || \"ControlSet\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "amcache_files",
+   "glob": [
+    "amcacheparser/*_Amcache_AssociatedFileEntries.csv",
+    "amcacheparser/*_Amcache_UnassociatedFileEntries.csv"
+   ],
+   "artifact": "Amcache (files)",
+   "category": "execution",
+   "tool": "AmcacheParser",
+   "times": [
+    {
+     "ts": "\"FileKeyLastWriteTimestamp\"",
+     "desc": "Amcache: file key written (≈ first execution / presence)"
+    }
+   ],
+   "table": "amcache_files",
+   "path": [
+    "FullPath"
+   ],
+   "description": "concat_ws(' ', \"Name\", 'SHA1=' || \"SHA1\", \"ProductName\", \"Version\", 'compiled=' || \"LinkDate\", 'app=' || \"ApplicationName\")"
+  },
+  {
+   "id": "amcache_programs",
+   "glob": [
+    "amcacheparser/*_Amcache_ProgramEntries.csv"
+   ],
+   "artifact": "Amcache (programs)",
+   "category": "installation",
+   "tool": "AmcacheParser",
+   "times": [
+    {
+     "ts": "\"KeyLastWriteTimestamp\"",
+     "desc": "Amcache: program key written"
+    },
+    {
+     "ts": "\"InstallDate\"",
+     "desc": "Program installation"
+    }
+   ],
+   "path": [
+    "RootDirPath"
+   ],
+   "description": "concat_ws(' ', \"Name\", \"Version\", \"Publisher\", '(' || \"Source\" || ')')"
+  },
+  {
+   "id": "amcache_devices",
+   "glob": [
+    "amcacheparser/*_Amcache_DevicePnps.csv",
+    "amcacheparser/*_Amcache_DeviceContainers.csv"
+   ],
+   "artifact": "Amcache (devices)",
+   "category": "devices",
+   "tool": "AmcacheParser",
+   "times": [
+    {
+     "ts": "\"KeyLastWriteTimestamp\"",
+     "desc": "Amcache: device key written"
+    }
+   ],
+   "table": "amcache_devices",
+   "description": [
+    "Description",
+    "FriendlyName",
+    "ModelName",
+    "Manufacturer",
+    "Model",
+    "KeyName"
+   ]
+  },
+  {
+   "id": "amcache_drivers",
+   "glob": [
+    "amcacheparser/*_Amcache_DriveBinaries.csv",
+    "amcacheparser/*_Amcache_DriverPackages.csv"
+   ],
+   "artifact": "Amcache (drivers)",
+   "category": "drivers",
+   "tool": "AmcacheParser",
+   "times": [
+    {
+     "ts": "\"KeyLastWriteTimestamp\"",
+     "desc": "Amcache: driver key written"
+    },
+    {
+     "ts": "\"DriverLastWriteTime\"",
+     "desc": "Driver: file date"
+    }
+   ],
+   "table": "amcache_drivers",
+   "path": [
+    "KeyName"
+   ],
+   "description": [
+    "DriverName",
+    "DriverCompany",
+    "Inf",
+    "Provider",
+    "Version",
+    "DriverVersion"
+   ]
+  },
+  {
+   "id": "amcache_shortcuts",
+   "glob": [
+    "amcacheparser/*_Amcache_ShortCuts.csv"
+   ],
+   "artifact": "Amcache (shortcuts)",
+   "category": "execution",
+   "tool": "AmcacheParser",
+   "times": [
+    {
+     "ts": "\"KeyLastWriteTimestamp\"",
+     "desc": "Amcache: shortcut key written"
+    }
+   ],
+   "path": [
+    "LnkName"
+   ]
+  },
+  {
+   "id": "srum_app_resource",
+   "glob": [
+    "srumecmd/*_SrumECmd_AppResourceUseInfo_Output.csv"
+   ],
+   "artifact": "SRUM (application resources)",
+   "category": "execution",
+   "tool": "SrumECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "SRUM: resource usage (end of period)"
+    }
+   ],
+   "path": [
+    "ExeInfo"
+   ],
+   "user": [
+    "UserName",
+    "Sid"
+   ],
+   "description": "concat_ws(' ', \"ExeInfoDescription\", 'foreground read/written=' || \"ForegroundBytesRead\" || '/' || \"ForegroundBytesWritten\", 'background read/written=' || \"BackgroundBytesRead\" || '/' || \"BackgroundBytesWritten\")"
+  },
+  {
+   "id": "srum_app_timeline",
+   "glob": [
+    "srumecmd/*_SrumECmd_AppTimelineProvider_Output.csv"
+   ],
+   "artifact": "SRUM (application timeline)",
+   "category": "execution",
+   "tool": "SrumECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "SRUM: record"
+    },
+    {
+     "ts": "\"EndTime\"",
+     "desc": "SRUM: end of application activity"
+    }
+   ],
+   "path": [
+    "ExeInfo"
+   ],
+   "user": [
+    "UserName",
+    "Sid"
+   ],
+   "description": "concat_ws(' ', \"ExeInfoDescription\", 'duration_ms=' || \"DurationMs\")"
+  },
+  {
+   "id": "srum_network_usage",
+   "glob": [
+    "srumecmd/*_SrumECmd_NetworkUsages_Output.csv"
+   ],
+   "artifact": "SRUM (network usage per application)",
+   "category": "network",
+   "tool": "SrumECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "SRUM: network usage (end of period)"
+    }
+   ],
+   "path": [
+    "ExeInfo"
+   ],
+   "user": [
+    "UserName",
+    "Sid"
+   ],
+   "description": "concat_ws(' ', 'received=' || \"BytesReceived\", 'sent=' || \"BytesSent\", \"InterfaceType\", \"ProfileName\")"
+  },
+  {
+   "id": "srum_network_conn",
+   "glob": [
+    "srumecmd/*_SrumECmd_NetworkConnections_Output.csv"
+   ],
+   "artifact": "SRUM (network connections)",
+   "category": "network",
+   "tool": "SrumECmd",
+   "times": [
+    {
+     "ts": "\"ConnectStartTime\"",
+     "desc": "SRUM: network connection start"
+    },
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "SRUM: record"
+    }
+   ],
+   "user": [
+    "UserName",
+    "Sid"
+   ],
+   "description": "concat_ws(' ', \"InterfaceType\", \"ProfileName\", 'duration_s=' || \"ConnectedTime\")"
+  },
+  {
+   "id": "srum_push",
+   "glob": [
+    "srumecmd/*_SrumECmd_PushNotifications_Output.csv"
+   ],
+   "artifact": "SRUM (push notifications)",
+   "category": "execution",
+   "tool": "SrumECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "SRUM: push notification"
+    }
+   ],
+   "path": [
+    "ExeInfo"
+   ],
+   "user": [
+    "UserName",
+    "Sid"
+   ],
+   "description": "concat_ws(' ', 'type=' || \"NotificationType\", 'size=' || \"PayloadSize\")"
+  },
+  {
+   "id": "srum_vfu",
+   "glob": [
+    "srumecmd/*_SrumECmd_vfuprov_Output.csv"
+   ],
+   "artifact": "SRUM (vfuprov)",
+   "category": "execution",
+   "tool": "SrumECmd",
+   "times": [
+    {
+     "ts": "\"StartTime\"",
+     "desc": "SRUM vfuprov: start"
+    },
+    {
+     "ts": "\"EndTime\"",
+     "desc": "SRUM vfuprov: end"
+    }
+   ],
+   "path": [
+    "ExeInfo"
+   ],
+   "user": [
+    "UserName",
+    "Sid"
+   ],
+   "description": "concat_ws(' ', 'duration=' || \"Duration\", 'flags=' || \"Flags\")"
+  },
+  {
+   "id": "srum_energy",
+   "glob": [
+    "srumecmd/*_SrumECmd_EnergyUsage_Output.csv"
+   ],
+   "artifact": "SRUM (energy)",
+   "category": "system",
+   "tool": "SrumECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "SRUM: energy"
+    },
+    {
+     "ts": "\"EventTimestamp\"",
+     "desc": "SRUM: energy event"
+    }
+   ],
+   "description": "concat_ws(' ', 'charge=' || \"ChargeLevel\", \"StateTransition\")"
+  },
+  {
+   "id": "lnk",
+   "glob": [
+    "lecmd/*.csv"
+   ],
+   "artifact": "LNK files",
+   "category": "opened files",
+   "tool": "LECmd",
+   "times": [
+    {
+     "ts": "\"SourceCreated\"",
+     "desc": "LNK created (≈ first opening of the target)"
+    },
+    {
+     "ts": "\"SourceModified\"",
+     "desc": "LNK modified (≈ last opening)"
+    },
+    {
+     "ts": "\"TargetCreated\"",
+     "desc": "Target: created (recorded in the LNK)"
+    },
+    {
+     "ts": "\"TargetModified\"",
+     "desc": "Target: modified (recorded in the LNK)"
+    },
+    {
+     "ts": "\"TargetAccessed\"",
+     "desc": "Target: accessed (recorded in the LNK)"
+    }
+   ],
+   "path": [
+    "LocalPath",
+    "NetworkPath",
+    "TargetIDAbsolutePath",
+    "CommonPath"
+   ],
+   "description": "concat_ws(' ', CASE WHEN \"Arguments\" <> '' THEN 'args: ' || \"Arguments\" END, 'machine=' || \"MachineID\", 'MAC=' || \"MachineMACAddress\", 'volume=' || \"VolumeSerialNumber\", \"DriveType\", 'size=' || \"FileSize\")",
+   "evidence": "orig_path(\"SourceFile\")",
+   "note": "SourceAccessed is not used (modified by collection/parsing)."
+  },
+  {
+   "id": "jumplist_auto",
+   "glob": [
+    "jlecmd/*_AutomaticDestinations.csv"
+   ],
+   "artifact": "Jump Lists (automatic)",
+   "category": "opened files",
+   "tool": "JLECmd",
+   "times": [
+    {
+     "ts": "\"CreationTime\"",
+     "desc": "Jump List: entry created (≈ first opened)"
+    },
+    {
+     "ts": "\"LastModified\"",
+     "desc": "Jump List: last opened"
+    },
+    {
+     "ts": "\"TargetCreated\"",
+     "desc": "Target: created (recorded)"
+    },
+    {
+     "ts": "\"TargetModified\"",
+     "desc": "Target: modified (recorded)"
+    },
+    {
+     "ts": "\"TargetAccessed\"",
+     "desc": "Target: accessed (recorded)"
+    }
+   ],
+   "path": [
+    "Path",
+    "LocalPath",
+    "TargetIDAbsolutePath"
+   ],
+   "description": "concat_ws(' ', \"AppIdDescription\", CASE WHEN \"Arguments\" <> '' THEN 'args: ' || \"Arguments\" END, 'interactions=' || \"InteractionCount\", 'machine=' || \"Hostname\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "jumplist_custom",
+   "glob": [
+    "jlecmd/*_CustomDestinations.csv"
+   ],
+   "artifact": "Jump Lists (custom)",
+   "category": "opened files",
+   "tool": "JLECmd",
+   "times": [
+    {
+     "ts": "\"SourceModified\"",
+     "desc": "Custom Jump List modified"
+    },
+    {
+     "ts": "\"TargetCreated\"",
+     "desc": "Target: created (recorded)"
+    },
+    {
+     "ts": "\"TargetModified\"",
+     "desc": "Target: modified (recorded)"
+    },
+    {
+     "ts": "\"TargetAccessed\"",
+     "desc": "Target: accessed (recorded)"
+    }
+   ],
+   "path": [
+    "LocalPath",
+    "TargetIDAbsolutePath",
+    "CommonPath"
+   ],
+   "description": "concat_ws(' ', \"AppIdDescription\", \"EntryName\", CASE WHEN \"Arguments\" <> '' THEN 'args: ' || \"Arguments\" END)",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "shellbags",
+   "glob": [
+    "sbecmd/*.csv"
+   ],
+   "artifact": "ShellBags",
+   "category": "opened folders",
+   "tool": "SBECmd",
+   "times": [
+    {
+     "ts": "\"LastWriteTime\"",
+     "desc": "ShellBag: key written"
+    },
+    {
+     "ts": "\"FirstInteracted\"",
+     "desc": "ShellBag: first interaction"
+    },
+    {
+     "ts": "\"LastInteracted\"",
+     "desc": "ShellBag: last interaction"
+    },
+    {
+     "ts": "\"CreatedOn\"",
+     "desc": "Folder: created (recorded)"
+    },
+    {
+     "ts": "\"ModifiedOn\"",
+     "desc": "Folder: modified (recorded)"
+    },
+    {
+     "ts": "\"AccessedOn\"",
+     "desc": "Folder: accessed (recorded)"
+    }
+   ],
+   "path": [
+    "AbsolutePath"
+   ],
+   "user": "nullif(regexp_extract(_src_file, '([^/]+)_(NTUSER|UsrClass)\\.csv$', 1), '')",
+   "description": "concat_ws(' ', \"ShellType\", \"Value\", 'MFT=' || \"MFTEntry\", CASE WHEN \"HasExplored\" = 'True' THEN '[explored]' END)"
+  },
+  {
+   "id": "recyclebin",
+   "glob": [
+    "rbcmd/*.csv"
+   ],
+   "artifact": "Recycle Bin ($I)",
+   "category": "deletion",
+   "tool": "RBCmd",
+   "times": [
+    {
+     "ts": "\"DeletedOn\"",
+     "desc": "Deletion (moved to Recycle Bin)"
+    }
+   ],
+   "path": [
+    "FileName"
+   ],
+   "description": "concat_ws(' ', 'size=' || \"FileSize\", \"FileType\")",
+   "evidence": "orig_path(\"SourceName\")"
+  },
+  {
+   "id": "wxt_activity",
+   "glob": [
+    "wxtcmd/*/*_Activity.csv"
+   ],
+   "artifact": "Windows Timeline (ActivitiesCache)",
+   "category": "user activity",
+   "tool": "WxTCmd",
+   "times": [
+    {
+     "ts": "\"StartTime\"",
+     "desc": "Activity: start"
+    },
+    {
+     "ts": "\"EndTime\"",
+     "desc": "Activity: end"
+    },
+    {
+     "ts": "\"LastModifiedTime\"",
+     "desc": "Activity: last modified"
+    }
+   ],
+   "path": [
+    "Executable"
+   ],
+   "user": "coalesce(nullif(regexp_extract(_src_file, '(?i)^wxtcmd/[A-Za-z]/Users/([^/]+)/', 1), ''), nullif(regexp_extract(_src_file, '^wxtcmd/([^/]+)/', 1), ''))",
+   "description": "concat_ws(' ', \"DisplayText\", \"ContentInfo\", 'type=' || \"ActivityType\", 'duration=' || \"Duration\", \"ClipboardPayload\")",
+   "evidence": "CASE WHEN regexp_matches(_src_file, '^wxtcmd/[A-Za-z]/.+/[^/]+$') THEN regexp_replace(replace(regexp_extract(_src_file, '^wxtcmd/(.+)/[^/]+$', 1), '/', '\\'), '^([A-Za-z])\\\\', '\\1:\\\\') || '\\ActivitiesCache.db' END",
+   "note": "Evidence: original path of ActivitiesCache.db, rebuilt from the output folder (the orchestrator stores the WxTCmd output under the original path of the database). Outputs of the former layout (wxtcmd/<user>/): empty evidence, run the wxtcmd job again."
+  },
+  {
+   "id": "wxt_packages",
+   "glob": [
+    "wxtcmd/*/*_Activity_PackageIDs.csv"
+   ],
+   "artifact": "Windows Timeline (PackageIDs)",
+   "category": "user activity",
+   "tool": "WxTCmd",
+   "times": [],
+   "user": "coalesce(nullif(regexp_extract(_src_file, '(?i)^wxtcmd/[A-Za-z]/Users/([^/]+)/', 1), ''), nullif(regexp_extract(_src_file, '^wxtcmd/([^/]+)/', 1), ''))",
+   "note": "Raw table (expiry date only).",
+   "evidence": "CASE WHEN regexp_matches(_src_file, '^wxtcmd/[A-Za-z]/.+/[^/]+$') THEN regexp_replace(replace(regexp_extract(_src_file, '^wxtcmd/(.+)/[^/]+$', 1), '/', '\\'), '^([A-Za-z])\\\\', '\\1:\\\\') || '\\ActivitiesCache.db' END"
+  },
+  {
+   "id": "sidr_files",
+   "glob": [
+    "sidr/*_File_Report_*.csv"
+   ],
+   "artifact": "Windows Search (indexed files)",
+   "category": "file system",
+   "tool": "SIDR",
+   "times": [
+    {
+     "ts": "\"System_DateCreated\"",
+     "desc": "Indexed file: created"
+    },
+    {
+     "ts": "\"System_DateModified\"",
+     "desc": "Indexed file: modified"
+    },
+    {
+     "ts": "\"System_DateAccessed\"",
+     "desc": "Indexed file: accessed"
+    },
+    {
+     "ts": "\"System_Search_GatherTime\"",
+     "desc": "Windows Search: indexing"
+    }
+   ],
+   "path": [
+    "System_ItemPathDisplay"
+   ],
+   "host": [
+    "System_ComputerName"
+   ],
+   "description": "concat_ws(' ', \"System_ItemType\", 'size=' || \"System_Size\", 'owner=' || \"System_FileOwner\", \"System_Search_AutoSummary\")"
+  },
+  {
+   "id": "sidr_activity",
+   "glob": [
+    "sidr/*_Activity_History_Report_*.csv"
+   ],
+   "artifact": "Windows Search (activity history)",
+   "category": "user activity",
+   "tool": "SIDR",
+   "times": [
+    {
+     "ts": "\"System_ActivityHistory_StartTime\"",
+     "desc": "Activity: start"
+    },
+    {
+     "ts": "\"System_ActivityHistory_EndTime\"",
+     "desc": "Activity: end"
+    },
+    {
+     "ts": "\"System_DateModified\"",
+     "desc": "Activity: modified"
+    }
+   ],
+   "path": [
+    "System_Activity_ContentUri",
+    "System_ItemUrl"
+   ],
+   "host": [
+    "System_ComputerName"
+   ],
+   "description": "concat_ws(' ', \"System_Activity_AppDisplayName\", \"System_Activity_DisplayText\", \"System_ActivityHistory_AppId\")"
+  },
+  {
+   "id": "sidr_internet",
+   "glob": [
+    "sidr/*_Internet_History_Report_*.csv"
+   ],
+   "artifact": "Windows Search (Internet history)",
+   "category": "browsing",
+   "tool": "SIDR",
+   "times": [
+    {
+     "ts": "\"System_DateModified\"",
+     "desc": "Windows Search: Internet history"
+    },
+    {
+     "ts": "\"System_Search_GatherTime\"",
+     "desc": "Windows Search: indexing"
+    }
+   ],
+   "path": [
+    "System_ItemUrl",
+    "System_Link_TargetUrl",
+    "System_ItemPathDisplay"
+   ],
+   "host": [
+    "System_ComputerName"
+   ],
+   "description": [
+    "System_Title",
+    "System_ItemName",
+    "System_ItemNameDisplay"
+   ]
+  },
+  {
+   "id": "chromium_visits",
+   "glob": [
+    "sqlecmd/*_ChromiumBrowser_HistoryVisits_*.csv"
+   ],
+   "artifact": "Chromium browser (visits)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"VisitTime (UTC)\"",
+     "desc": "Web visit"
+    }
+   ],
+   "path": [
+    "URL"
+   ],
+   "description": "concat_ws(' ', \"URLTitle\", 'visits=' || \"VisitCount\", 'typed=' || \"TypedCount\", 'duration_s=' || \"VisitDurationInSeconds\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "chromium_downloads",
+   "glob": [
+    "sqlecmd/*_ChromiumBrowser_Downloads_*.csv"
+   ],
+   "artifact": "Chromium browser (downloads)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"StartTime\"",
+     "desc": "Download: start"
+    },
+    {
+     "ts": "\"EndTime\"",
+     "desc": "Download: end"
+    },
+    {
+     "ts": "\"LastAccessTime\"",
+     "desc": "Download: last accessed"
+    }
+   ],
+   "path": [
+    "TargetPath",
+    "CurrentPath"
+   ],
+   "description": "concat_ws(' ', 'URL: ' || \"DownloadURL\", 'referrer: ' || \"ReferrerURL\", \"State\", \"DangerType\", 'size=' || \"TotalBytes\", \"OriginalMIMEType\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "chromium_keywords",
+   "glob": [
+    "sqlecmd/*_ChromiumBrowser_KeywordSearches_*.csv"
+   ],
+   "artifact": "Chromium browser (searches)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"LastVisitTime\"",
+     "desc": "Search typed"
+    }
+   ],
+   "path": [
+    "URL"
+   ],
+   "description": "'recherche: ' || \"KeywordSearchTerm\"",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "chromium_omnibox",
+   "glob": [
+    "sqlecmd/*_ChromiumBrowser_OmniboxShortcuts_*.csv"
+   ],
+   "artifact": "Chromium browser (address bar)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"LastAccessTime\"",
+     "desc": "Typed in the address bar"
+    }
+   ],
+   "path": [
+    "URL"
+   ],
+   "description": "concat_ws(' ', 'typed: ' || \"TextTyped\", \"Contents\", 'selections=' || \"TimesSelectedByUser\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "chromium_cookies",
+   "glob": [
+    "sqlecmd/*_ChromiumBrowser_Cookies_*.csv"
+   ],
+   "artifact": "Chromium browser (cookies)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"CreationUTC\"",
+     "desc": "Cookie created"
+    },
+    {
+     "ts": "\"LastAccessUTC\"",
+     "desc": "Cookie: last accessed"
+    }
+   ],
+   "path": [
+    "HostKey"
+   ],
+   "description": "concat_ws(' ', \"Name\", \"Path\", 'expire=' || \"ExpiresUTC\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "chromium_favicons",
+   "glob": [
+    "sqlecmd/*_ChromiumBrowser_Favicons_*.csv"
+   ],
+   "artifact": "Chromium browser (favicons)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"LastUpdated\"",
+     "desc": "Favicon updated (page visited)"
+    }
+   ],
+   "path": [
+    "PageURL"
+   ],
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "chromium_topsites",
+   "glob": [
+    "sqlecmd/*_ChromiumBrowser_TopSites_*.csv"
+   ],
+   "artifact": "Chromium browser (top sites)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [],
+   "evidence": "orig_path(\"SourceFile\")",
+   "note": "No timestamp."
+  },
+  {
+   "id": "chromium_predictor",
+   "glob": [
+    "sqlecmd/*_ChromiumBrowser_NetworkActionPredictor_*.csv"
+   ],
+   "artifact": "Chromium browser (autofill)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [],
+   "evidence": "orig_path(\"SourceFile\")",
+   "note": "No timestamp: typed text -> URL."
+  },
+  {
+   "id": "activities_sqlecmd",
+   "glob": [
+    "sqlecmd/*_Windows_ActivitiesCacheDB_*.csv"
+   ],
+   "artifact": "Windows Timeline (SQLECmd)",
+   "category": "user activity",
+   "tool": "SQLECmd",
+   "times": [],
+   "evidence": "orig_path(\"SourceFile\")",
+   "note": "Out of the timeline: the SQLECmd map converts these dates to the LOCAL time of the analysis machine (difference observed with WxTCmd and Dissect). Use wxt_activity."
+  },
+  {
+   "id": "activities_sqlecmd_pkg",
+   "glob": [
+    "sqlecmd/*_Windows_ActivityPackageId_*.csv"
+   ],
+   "artifact": "Windows Timeline (SQLECmd, PackageId)",
+   "category": "user activity",
+   "tool": "SQLECmd",
+   "times": [],
+   "evidence": "orig_path(\"SourceFile\")",
+   "note": "Raw table."
+  },
+  {
+   "id": "firefox_history",
+   "glob": [
+    "sqlecmd/*_Firefox_History_*.csv"
+   ],
+   "artifact": "Firefox browser (visits)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"VisitDate\"",
+     "desc": "Web visit (Firefox)"
+    }
+   ],
+   "path": [
+    "URL"
+   ],
+   "description": "concat_ws(' ', \"Title\", 'type=' || \"VisitType\", 'visits=' || \"VisitCount\", CASE WHEN \"Typed\" = 'Yes' THEN '[typed]' END)",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "firefox_downloads",
+   "glob": [
+    "sqlecmd/*_Firefox_Downloads-PlacesDB_*.csv"
+   ],
+   "artifact": "Firefox browser (downloads)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"DateAdded\"",
+     "desc": "Download (Firefox): added"
+    },
+    {
+     "ts": "\"LastModified\"",
+     "desc": "Download (Firefox): modified"
+    }
+   ],
+   "path": [
+    "Content",
+    "URL"
+   ],
+   "description": "concat_ws(' ', 'URL: ' || \"URL\", \"Type\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "firefox_cookies",
+   "glob": [
+    "sqlecmd/*_Firefox_Cookies_*.csv"
+   ],
+   "artifact": "Firefox browser (cookies)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"Creation Time\"",
+     "desc": "Cookie created (Firefox)"
+    },
+    {
+     "ts": "\"Last Accessed Time\"",
+     "desc": "Cookie: last accessed (Firefox)"
+    }
+   ],
+   "path": [
+    "Host"
+   ],
+   "description": "concat_ws(' ', \"Name\", 'expire=' || \"Expiration\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "firefox_formhistory",
+   "glob": [
+    "sqlecmd/*_Firefox_FormHistory_*.csv"
+   ],
+   "artifact": "Firefox browser (form history)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"First Used\"",
+     "desc": "Form entry: first used"
+    },
+    {
+     "ts": "\"Last Used\"",
+     "desc": "Form entry: last used"
+    }
+   ],
+   "description": "concat_ws(' ', \"FieldName\" || ' = ' || \"Value\", 'utilisations=' || \"TimesUsed\")",
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "firefox_bookmarks",
+   "glob": [
+    "sqlecmd/*_Firefox_Bookmarks_*.csv"
+   ],
+   "artifact": "Firefox browser (bookmarks)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [
+    {
+     "ts": "\"DateAdded\"",
+     "desc": "Bookmark added"
+    },
+    {
+     "ts": "\"LastModified\"",
+     "desc": "Bookmark modified"
+    }
+   ],
+   "path": [
+    "URL"
+   ],
+   "description": [
+    "Title"
+   ],
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "firefox_favicons",
+   "glob": [
+    "sqlecmd/*_Firefox_Favicons_*.csv"
+   ],
+   "artifact": "Firefox browser (favicons)",
+   "category": "browsing",
+   "tool": "SQLECmd",
+   "times": [],
+   "evidence": "orig_path(\"SourceFile\")",
+   "note": "Only date: expiry (not an event): raw table."
+  },
+  {
+   "id": "hindsight",
+   "glob": [
+    "hindsight/*.jsonl"
+   ],
+   "artifact": "Chromium browser (Hindsight)",
+   "category": "browsing",
+   "tool": "Hindsight",
+   "times": [
+    {
+     "ts": "\"datetime\"",
+     "desc_sql": "'Hindsight: ' || coalesce(\"timestamp_desc\", '?')"
+    }
+   ],
+   "path": [
+    "url",
+    "source_path"
+   ],
+   "description": [
+    "message"
+   ],
+   "user": "nullif(regexp_extract(_src_file, '^hindsight/hindsight_(.+)_[^_]+\\.jsonl$', 1), '')",
+   "evidence": "orig_path(coalesce(nullif(\"source_path\", ''), \"profile\"))",
+   "exclude": [
+    {
+     "column": "key",
+     "regex": "(?i)expir"
+    }
+   ],
+   "note": "Preferences whose name contains 'expir' excluded from the timeline (future expiry dates, not events)."
+  },
+  {
+   "id": "odl",
+   "glob": [
+    "odl/*.csv"
+   ],
+   "artifact": "OneDrive (ODL logs)",
+   "category": "cloud",
+   "tool": "odl.py",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "OneDrive: log entry"
+    }
+   ],
+   "path": [
+    "Params_Decoded"
+   ],
+   "user": "nullif(regexp_extract(_src_file, '^odl/odl_(.+)_[^_]+\\.csv$', 1), '')",
+   "description": "concat_ws(' ', \"Code_File\", \"Function\", \"Params_Decoded\", '(' || \"Filename\" || ')')",
+   "where": "\"Timestamp\" IS NOT NULL"
+  },
+  {
+   "id": "registry_kroll",
+   "glob": [
+    "recmd_kroll/recmd_kroll_*.csv"
+   ],
+   "artifact": "Registry (RECmd Kroll)",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"LastWriteTimestamp\"",
+     "desc": "Registry: key last written"
+    }
+   ],
+   "path": [
+    "KeyPath"
+   ],
+   "description": "concat_ws(' | ', \"Category\", \"Description\", \"ValueName\" || '=' || \"ValueData\", \"ValueData2\", \"ValueData3\", CASE WHEN \"Deleted\" = 'True' THEN '[deleted]' END)",
+   "evidence": "orig_path(\"HivePath\")"
+  },
+  {
+   "id": "registry_complement",
+   "glob": [
+    "recmd_complement/recmd_complement_*.csv"
+   ],
+   "artifact": "Registry (RECmd, complementary batch)",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"LastWriteTimestamp\"",
+     "desc": "Registry: key last written"
+    }
+   ],
+   "path": [
+    "KeyPath"
+   ],
+   "description": "concat_ws(' | ', \"Category\", \"Description\", \"ValueName\" || '=' || \"ValueData\", \"ValueData2\", \"ValueData3\", CASE WHEN \"Deleted\" = 'True' THEN '[deleted]' END)",
+   "evidence": "orig_path(\"HivePath\")",
+   "note": "Batch pipeline\\config\\recmd\\Sleuthline_Complement.reb: EMDMgmt (volume serial numbers), Active Setup, Print Monitors / Processors, BootExecute / SetupExecute / Execute, Compatibility Assistant Store / Persisted (PCA). Category column: Devices, Persistence, Program Execution."
+  },
+  {
+   "id": "reg_bam",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_BamDam.csv"
+   ],
+   "artifact": "Registry: BAM/DAM",
+   "category": "execution",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"ExecutionTime\"",
+     "desc": "Execution (BAM)"
+    }
+   ],
+   "path": [
+    "Program"
+   ],
+   "description": [
+    "BatchKeyPath"
+   ],
+   "note": "User: SID in BatchKeyPath."
+  },
+  {
+   "id": "reg_userassist",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_UserAssist.csv"
+   ],
+   "artifact": "Registry: UserAssist",
+   "category": "execution",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"LastExecuted\"",
+     "desc": "Execution (UserAssist, last)"
+    }
+   ],
+   "path": [
+    "ProgramName"
+   ],
+   "description": "concat_ws(' ', 'runs=' || \"RunCounter\", 'focus=' || \"FocusCount\", 'focus_time=' || \"FocusTime\")"
+  },
+  {
+   "id": "reg_recentdocs",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_RecentDocs.csv"
+   ],
+   "artifact": "Registry: RecentDocs",
+   "category": "opened files",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"OpenedOn\"",
+     "desc": "Opened (RecentDocs)"
+    },
+    {
+     "ts": "\"ExtensionLastOpened\"",
+     "desc": "Last opened for the extension"
+    }
+   ],
+   "path": [
+    "TargetName"
+   ],
+   "description": "concat_ws(' ', 'lnk=' || \"LnkName\", 'mru=' || \"MruPosition\", \"Extension\")"
+  },
+  {
+   "id": "reg_opensave",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_OpenSavePidlMRU.csv"
+   ],
+   "artifact": "Registry: OpenSavePidlMRU",
+   "category": "opened files",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"OpenedOn\"",
+     "desc": "Opened/saved via dialog box"
+    }
+   ],
+   "path": [
+    "AbsolutePath"
+   ],
+   "description": "concat_ws(' ', \"Extension\", 'mru=' || \"MruPosition\")"
+  },
+  {
+   "id": "reg_lastvisited",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_LastVisitedPidlMRU.csv"
+   ],
+   "artifact": "Registry: LastVisitedPidlMRU",
+   "category": "opened files",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"OpenedOn\"",
+     "desc": "Folder used by an application (dialog box)"
+    }
+   ],
+   "path": [
+    "AbsolutePath"
+   ],
+   "description": "concat_ws(' ', 'appli=' || \"Executable\", 'mru=' || \"MruPosition\")"
+  },
+  {
+   "id": "reg_cidsizemru",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_CIDSizeMRU.csv"
+   ],
+   "artifact": "Registry: CIDSizeMRU",
+   "category": "execution",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"OpenedOn\"",
+     "desc": "Application used (CIDSizeMRU)"
+    }
+   ],
+   "path": [
+    "Executable"
+   ]
+  },
+  {
+   "id": "reg_jumplistdata",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_JumplistData.csv"
+   ],
+   "artifact": "Registry: JumplistData",
+   "category": "execution",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"ExecutedOn\"",
+     "desc": "Execution (JumplistData)"
+    }
+   ],
+   "path": [
+    "JumpListName"
+   ]
+  },
+  {
+   "id": "reg_taskcache",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_TaskCache.csv"
+   ],
+   "artifact": "Registry: TaskCache",
+   "category": "persistence",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"CreatedOn\"",
+     "desc": "Scheduled task: created"
+    },
+    {
+     "ts": "\"LastStart\"",
+     "desc": "Scheduled task: last run"
+    },
+    {
+     "ts": "\"LastStop\"",
+     "desc": "Scheduled task: last stopped"
+    }
+   ],
+   "path": [
+    "Path"
+   ],
+   "description": "concat_ws(' ', \"Command\", \"Arguments\", 'author=' || \"Author\", 'state=' || \"TaskState\", 'result=' || \"LastActionResult\")"
+  },
+  {
+   "id": "reg_services",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_Services.csv"
+   ],
+   "artifact": "Registry: services",
+   "category": "persistence",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"NameKeyLastWrite\"",
+     "desc": "Service: key written"
+    },
+    {
+     "ts": "\"ParametersKeyLastWrite\"",
+     "desc": "Service: Parameters written"
+    }
+   ],
+   "path": [
+    "ImagePath",
+    "ServiceDLL"
+   ],
+   "description": "concat_ws(' ', \"Name\", \"DisplayName\", 'start=' || \"StartMode\", \"ServiceType\", 'dll=' || \"ServiceDLL\")"
+  },
+  {
+   "id": "reg_useraccounts",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_UserAccounts.csv"
+   ],
+   "artifact": "Registry: accounts (SAM)",
+   "category": "accounts",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"CreatedOn\"",
+     "desc": "Account created"
+    },
+    {
+     "ts": "\"LastLoginTime\"",
+     "desc": "Last account logon"
+    },
+    {
+     "ts": "\"LastPasswordChange\"",
+     "desc": "Password change"
+    },
+    {
+     "ts": "\"LastIncorrectPassword\"",
+     "desc": "Last incorrect password"
+    }
+   ],
+   "user": [
+    "UserName"
+   ],
+   "description": "concat_ws(' ', \"UserName\", \"FullName\", 'RID=' || \"UserId\", 'logons=' || \"TotalLoginCount\", 'groups=' || \"Groups\", CASE WHEN \"AccountDisabled\" = 'True' THEN '[disabled]' END)"
+  },
+  {
+   "id": "reg_profilelist",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_ProfileList.csv"
+   ],
+   "artifact": "Registry: ProfileList",
+   "category": "accounts",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "Profile: key written"
+    },
+    {
+     "ts": "\"LastLogonTime\"",
+     "desc": "Profile: last logon"
+    },
+    {
+     "ts": "\"LastLogoffTime\"",
+     "desc": "Profile: last logoff"
+    }
+   ],
+   "path": [
+    "ProfileImagePath"
+   ],
+   "description": [
+    "KeyName"
+   ]
+  },
+  {
+   "id": "reg_usb",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_USB.csv"
+   ],
+   "artifact": "Registry: USB",
+   "category": "devices",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Installed\"",
+     "desc": "USB: installed"
+    },
+    {
+     "ts": "\"FirstInstalled\"",
+     "desc": "USB: first installed"
+    },
+    {
+     "ts": "\"LastConnected\"",
+     "desc": "USB: last connected"
+    },
+    {
+     "ts": "\"LastRemoved\"",
+     "desc": "USB: last removed"
+    }
+   ],
+   "description": "concat_ws(' ', \"FriendlyName\", \"DeviceDesc\", 'serial=' || \"SerialNumber\", \"DeviceName\")"
+  },
+  {
+   "id": "reg_usbstor",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_USBSTOR.csv"
+   ],
+   "artifact": "Registry: USBSTOR",
+   "category": "devices",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "USBSTOR: key written"
+    },
+    {
+     "ts": "\"Installed\"",
+     "desc": "USBSTOR: installed"
+    },
+    {
+     "ts": "\"FirstInstalled\"",
+     "desc": "USBSTOR: first installed (property 0064)"
+    },
+    {
+     "ts": "\"LastConnected\"",
+     "desc": "USBSTOR: last connected (property 0066)"
+    },
+    {
+     "ts": "\"LastRemoved\"",
+     "desc": "USBSTOR: last removed (property 0067)"
+    }
+   ],
+   "description": "concat_ws(' ', \"Manufacturer\", \"Title\", \"Version\", 'serial=' || \"SerialNumber\", \"DeviceName\", 'disk=' || \"DiskId\")",
+   "note": "RECmd USBSTOR plugin (Kroll): properties {83da6326-97a6-4088-9453-a1923f573b29}\\0064/0066/0067 already decoded."
+  },
+  {
+   "id": "reg_scsi",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_SCSI.csv"
+   ],
+   "artifact": "Registry: SCSI",
+   "category": "devices",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Installed\"",
+     "desc": "Disk: installed"
+    },
+    {
+     "ts": "\"FirstInstalled\"",
+     "desc": "Disk: first installed"
+    },
+    {
+     "ts": "\"LastConnected\"",
+     "desc": "Disk: last connected"
+    },
+    {
+     "ts": "\"LastRemoved\"",
+     "desc": "Disk: last removed"
+    }
+   ],
+   "description": "concat_ws(' ', \"Manufacturer\", \"Title\", 'serial=' || \"SerialNumber\", \"DeviceName\")"
+  },
+  {
+   "id": "reg_deviceclasses",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_DeviceClasses.csv"
+   ],
+   "artifact": "Registry: DeviceClasses",
+   "category": "devices",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "Device class: key written"
+    }
+   ],
+   "description": [
+    "Name",
+    "Type",
+    "SerialNumber"
+   ]
+  },
+  {
+   "id": "reg_uninstall",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_UnInstall.csv"
+   ],
+   "artifact": "Registry: Uninstall",
+   "category": "installation",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "Program: Uninstall key written"
+    },
+    {
+     "ts": "\"InstallDate\"",
+     "desc": "Program: installation date"
+    }
+   ],
+   "path": [
+    "InstallLocation"
+   ],
+   "description": "concat_ws(' ', \"DisplayName\", \"DisplayVersion\", \"Publisher\", 'source=' || \"InstallSource\")"
+  },
+  {
+   "id": "reg_products",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_Products.csv"
+   ],
+   "artifact": "Registry: Products (MSI)",
+   "category": "installation",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "MSI: key written"
+    },
+    {
+     "ts": "\"InstallDate\"",
+     "desc": "MSI: installation date"
+    }
+   ],
+   "path": [
+    "InstallLocation"
+   ],
+   "description": "concat_ws(' ', \"DisplayName\", \"Publisher\", 'source=' || \"InstallSource\")"
+  },
+  {
+   "id": "reg_windowsapp",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_WindowsApp.csv"
+   ],
+   "artifact": "Registry: Store applications",
+   "category": "installation",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"InstallTime\"",
+     "desc": "Store application installed"
+    }
+   ],
+   "path": [
+    "PackageRootFolder"
+   ],
+   "description": [
+    "DisplayName",
+    "KeyName"
+   ]
+  },
+  {
+   "id": "reg_typedurls",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_TypedURLs.csv"
+   ],
+   "artifact": "Registry: TypedURLs",
+   "category": "browsing",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "URL typed (TypedURLsTime)"
+    }
+   ],
+   "path": [
+    "Url"
+   ]
+  },
+  {
+   "id": "reg_radar",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_RADAR.csv"
+   ],
+   "artifact": "Registry: RADAR (memory leaks)",
+   "category": "execution",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"LastDetectionTime\"",
+     "desc": "RADAR: detection (program executed)"
+    }
+   ],
+   "path": [
+    "Filename"
+   ]
+  },
+  {
+   "id": "reg_volumeinfo",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_VolumeInfoCache.csv"
+   ],
+   "artifact": "Registry: VolumeInfoCache",
+   "category": "devices",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "Volume seen (VolumeInfoCache)"
+    }
+   ],
+   "description": [
+    "DriveName",
+    "VolumeLabel",
+    "DriveType"
+   ]
+  },
+  {
+   "id": "reg_apppaths",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_AppPaths.csv"
+   ],
+   "artifact": "Registry: App Paths",
+   "category": "installation",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "App Paths: key written"
+    }
+   ],
+   "path": [
+    "Path1",
+    "Path2"
+   ],
+   "description": [
+    "FileName"
+   ]
+  },
+  {
+   "id": "reg_wordwheelquery",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_WordWheelQuery.csv"
+   ],
+   "artifact": "Registry: WordWheelQuery (Explorer searches)",
+   "category": "user activity",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"LastWriteTimestamp\"",
+     "desc": "Explorer search: key written"
+    }
+   ],
+   "where": "\"MruPosition\" = '0'",
+   "description": "concat_ws(' ', 'recherche: ' || \"SearchTerm\", 'mru=' || \"MruPosition\")",
+   "note": "Only MRU entry 0 matches the key write date; the other terms are in the raw table."
+  },
+  {
+   "id": "reg_portabledevices",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_WindowsPortableDevices.csv"
+   ],
+   "artifact": "Registry: portable devices (WPD)",
+   "category": "devices",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"Timestamp\"",
+     "desc": "Portable device: key written"
+    }
+   ],
+   "description": "concat_ws(' ', \"FriendlyName\", \"Device\", 'serial=' || \"SerialNumber\")"
+  },
+  {
+   "id": "reg_knownnetworks",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_KnownNetworks.csv"
+   ],
+   "artifact": "Registry: known networks",
+   "category": "network",
+   "tool": "RECmd",
+   "times": [
+    {
+     "ts": "\"FirstConnectLOCAL\"",
+     "desc": "Network: first connected"
+    },
+    {
+     "ts": "\"LastConnectedLOCAL\"",
+     "desc": "Network: last connected"
+    }
+   ],
+   "local_time": true,
+   "description": "concat_ws(' ', \"NetworkName\", \"NameType\", 'passerelle=' || \"GatewayMacAddress\", 'DNS=' || \"DNSSuffix\")",
+   "note": "Dates in the machine's local time: converted to UTC with ActiveTimeBias."
+  },
+  {
+   "id": "reg_appcompat",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_AppCompat.csv"
+   ],
+   "artifact": "Registry: AppCompatCache (RECmd)",
+   "category": "execution",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Duplicate of shimcache (AppCompatCacheParser): raw table only."
+  },
+  {
+   "id": "reg_appcompatflags2",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_AppCompatFlags2.csv"
+   ],
+   "artifact": "Registry: AppCompatFlags2",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_etw",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_ETW.csv"
+   ],
+   "artifact": "Registry: ETW",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_fileexts",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_FileExts.csv"
+   ],
+   "artifact": "Registry: FileExts",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_firewallrules",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_FirewallRules.csv"
+   ],
+   "artifact": "Registry: FirewallRules",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_mounteddevices",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_MountedDevices.csv"
+   ],
+   "artifact": "Registry: MountedDevices",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_networkadapters",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_NetworkAdapters.csv"
+   ],
+   "artifact": "Registry: NetworkAdapters",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_networksetup2",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_NetworkSetup2.csv"
+   ],
+   "artifact": "Registry: NetworkSetup2",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_sambuiltin",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_SAMBuiltin.csv"
+   ],
+   "artifact": "Registry: SAMBuiltin",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_taskband",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_Taskband.csv"
+   ],
+   "artifact": "Registry: Taskband",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "reg_timezoneinfo",
+   "glob": [
+    "recmd_kroll/*/recmd_kroll_*_TimeZoneInfo.csv"
+   ],
+   "artifact": "Registry: TimeZoneInfo",
+   "category": "registry",
+   "tool": "RECmd",
+   "times": [],
+   "note": "Raw tables (configuration; no relevant event timestamp)."
+  },
+  {
+   "id": "evtx",
+   "glob": [
+    "evtxecmd/*.csv"
+   ],
+   "artifact": "Event logs (EVTX)",
+   "category": "logs",
+   "tool": "EvtxECmd",
+   "times": [
+    {
+     "ts": "\"TimeCreated\"",
+     "desc": "EVTX event"
+    }
+   ],
+   "host": [
+    "Computer"
+   ],
+   "user": [
+    "UserName",
+    "UserId"
+   ],
+   "description": "concat_ws(' | ', \"Channel\" || ' ' || \"EventId\", \"Provider\", \"MapDescription\", \"PayloadData1\", \"PayloadData2\", \"PayloadData3\", \"PayloadData4\", \"PayloadData5\", \"PayloadData6\", \"ExecutableInfo\", \"RemoteHost\")",
+   "path": [
+    "ExecutableInfo"
+   ],
+   "evidence": "orig_path(\"SourceFile\")"
+  },
+  {
+   "id": "setupapi",
+   "glob": [
+    "plaso_setupapi/*.jsonl"
+   ],
+   "artifact": "setupapi.dev.log",
+   "category": "devices",
+   "tool": "plaso",
+   "times": [
+    {
+     "ts": "make_timestamp(TRY_CAST(\"timestamp\" AS BIGINT))",
+     "desc_sql": "'setupapi: ' || coalesce(\"timestamp_desc\", '')"
+    }
+   ],
+   "description": [
+    "message"
+   ],
+   "evidence": "orig_path(regexp_replace(\"display_name\", '^[A-Z]+:', ''))",
+   "local_time": true,
+   "where": "\"__container_type__\" = 'event' OR \"__container_type__\" IS NULL"
+  },
+  {
+   "id": "hayabusa",
+   "glob": [
+    "hayabusa/*.jsonl"
+   ],
+   "artifact": "Hayabusa",
+   "category": "detection",
+   "tool": "Hayabusa",
+   "times": [],
+   "detection": {
+    "engine": "Hayabusa",
+    "ts": "\"Timestamp\"",
+    "rule_title": [
+     "RuleTitle"
+    ],
+    "rule_id": [
+     "RuleID"
+    ],
+    "level": [
+     "Level"
+    ],
+    "computer": [
+     "Computer"
+    ],
+    "channel": [
+     "Channel"
+    ],
+    "event_id": [
+     "EventID"
+    ],
+    "record_id": [
+     "RecordID"
+    ],
+    "details": "concat_ws(' | ', \"Details\", \"ExtraFieldInfo\")",
+    "tactics": [
+     "MitreTactics",
+     "MitreTags"
+    ],
+    "evidence": "orig_path(\"EvtxFile\")"
+   },
+   "note": "All rules (including old / deprecated ones), super-verbose profile."
+  },
+  {
+   "id": "chainsaw",
+   "glob": [
+    "chainsaw/*.jsonl"
+   ],
+   "artifact": "Chainsaw",
+   "category": "detection",
+   "tool": "Chainsaw",
+   "times": [],
+   "detection": {
+    "engine": "Chainsaw",
+    "ts": "\"timestamp\"",
+    "rule_title": [
+     "name"
+    ],
+    "rule_id": [
+     "id"
+    ],
+    "level": [
+     "level"
+    ],
+    "computer": "json_extract_string(\"document\", '$.data.Event.System.Computer')",
+    "channel": "json_extract_string(\"document\", '$.data.Event.System.Channel')",
+    "event_id": "json_extract_string(\"document\", '$.data.Event.System.EventID')",
+    "record_id": "json_extract_string(\"document\", '$.data.Event.System.EventRecordID')",
+    "details": "coalesce(CAST(json_extract(\"document\", '$.data.Event.EventData') AS VARCHAR), \"document\")",
+    "tactics": [
+     "tags"
+    ],
+    "evidence": "orig_path(json_extract_string(\"document\", '$.path'))"
+   }
+  },
+  {
+   "id": "zircolite",
+   "glob": [
+    "zircolite/zircolite_timeline_*.jsonl"
+   ],
+   "artifact": "Zircolite",
+   "category": "detection",
+   "tool": "Zircolite",
+   "times": [],
+   "detection": {
+    "engine": "Zircolite",
+    "ts": "\"Timestamp\"",
+    "rule_title": [
+     "RuleTitle"
+    ],
+    "rule_id": [
+     "RuleID"
+    ],
+    "level": [
+     "Level"
+    ],
+    "computer": [
+     "Computer"
+    ],
+    "channel": [
+     "Channel"
+    ],
+    "event_id": [
+     "EventID"
+    ],
+    "record_id": [
+     "RecordID"
+    ],
+    "details": "concat_ws(' | ', \"Details\", \"ExtraFields\")",
+    "tactics": "concat_ws(' ', \"Tactics\", \"Techniques\")",
+    "evidence": [
+     "SourceFile"
+    ]
+   }
+  },
+  {
+   "id": "zircolite_rules",
+   "glob": [
+    "zircolite/zircolite_*.json"
+   ],
+   "artifact": "Zircolite (triggered rules)",
+   "category": "detection",
+   "tool": "Zircolite",
+   "times": [],
+   "note": "Rule and match details: raw table (the alerts are in detections through zircolite_timeline)."
+  },
+  {
+   "id": "native_startup",
+   "glob": [
+    "native/startup.jsonl"
+   ],
+   "artifact": "Startup folders",
+   "category": "persistence",
+   "tool": "orchestrateur (interne)",
+   "times": [
+    {
+     "ts": "\"created_utc\"",
+     "desc": "file created (original timestamp, KAPE CopyLog)"
+    },
+    {
+     "ts": "\"modified_utc\"",
+     "desc": "file modified (original timestamp, KAPE CopyLog)"
+    }
+   ],
+   "path": [
+    "original_path"
+   ],
+   "user": [
+    "user"
+   ],
+   "evidence": [
+    "original_path"
+   ],
+   "description": "concat_ws(' | ', 'sha256=' || \"sha256\", 'size=' || \"size\")",
+   "note": "Timestamps recorded by KAPE on the original machine; access dates excluded (modified by the collection)."
+  },
+  {
+   "id": "native_hosts",
+   "glob": [
+    "native/hosts.jsonl"
+   ],
+   "artifact": "hosts file",
+   "category": "configuration",
+   "tool": "orchestrateur (interne)",
+   "times": [],
+   "path": [
+    "original_path"
+   ],
+   "evidence": [
+    "original_path"
+   ],
+   "description": [
+    "address",
+    "names"
+   ],
+   "note": "Active entries of the hosts file (raw table); the file modification date is in the $MFT timeline."
+  },
+  {
+   "id": "native_wifi",
+   "glob": [
+    "native/wifi_profiles.jsonl"
+   ],
+   "artifact": "Wi-Fi profiles (Wlansvc)",
+   "category": "network",
+   "tool": "orchestrateur (interne)",
+   "times": [
+    {
+     "ts": "\"created_utc\"",
+     "desc": "Wi-Fi profile: file created (original timestamp, KAPE CopyLog)"
+    },
+    {
+     "ts": "\"modified_utc\"",
+     "desc": "Wi-Fi profile: file modified (original timestamp, KAPE CopyLog)"
+    }
+   ],
+   "path": [
+    "original_path"
+   ],
+   "evidence": [
+    "original_path"
+   ],
+   "description": [
+    "ssid",
+    "name",
+    "authentication",
+    "encryption",
+    "connectionMode",
+    "connectionType"
+   ],
+   "note": "XML creation ≈ first connection to the network; connection dates in reg_knownnetworks / dissect_network_history. Wi-Fi key never extracted."
+  },
+  {
+   "id": "native_rdp",
+   "glob": [
+    "native/rdp_files.jsonl"
+   ],
+   "artifact": "RDP connection files (.rdp)",
+   "category": "remote access",
+   "tool": "orchestrateur (interne)",
+   "times": [
+    {
+     "ts": "\"created_utc\"",
+     "desc": ".rdp file: file created (original timestamp, KAPE CopyLog)"
+    },
+    {
+     "ts": "\"modified_utc\"",
+     "desc": ".rdp file: file modified (original timestamp, KAPE CopyLog)"
+    }
+   ],
+   "path": [
+    "original_path"
+   ],
+   "user": [
+    "user"
+   ],
+   "evidence": [
+    "original_path"
+   ],
+   "description": [
+    "full_address",
+    "username",
+    "gatewayhostname",
+    "remoteapplicationprogram",
+    "alternate_full_address"
+   ],
+   "note": "Default.rdp: last mstsc connection of the user (file modification ≈ last connection). Other .rdp files: received or downloaded (phishing with .rdp files). Full settings in the settings column; passwords excluded."
+  },
+  {
+   "id": "native_panther",
+   "glob": [
+    "native/panther.jsonl"
+   ],
+   "artifact": "Windows setup logs (Panther)",
+   "category": "system",
+   "tool": "orchestrateur (interne)",
+   "times": [
+    {
+     "ts": "\"ts_local\"",
+     "desc_sql": "'Panther: ' || coalesce(\"level\", 'line')"
+    }
+   ],
+   "evidence": [
+    "original_path"
+   ],
+   "description": "concat_ws(' ', '[' || \"component\" || ']', \"message\")",
+   "local_time": true,
+   "note": "setupact.log / setuperr.log: local time of the machine, converted with the CURRENT time zone (ActiveTimeBias); during the first setup phases the time zone is not configured yet: possible offset of a few hours."
+  },
+  {
+   "id": "dissect_activitiescache",
+   "glob": [
+    "dissect/activitiescache.jsonl"
+   ],
+   "artifact": "Windows Timeline (Dissect)",
+   "category": "user activity",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "app_activity_id",
+    "app_id",
+    "payload",
+    "clipboard_payload"
+   ]
+  },
+  {
+   "id": "dissect_applications",
+   "glob": [
+    "dissect/applications.jsonl"
+   ],
+   "artifact": "Installed applications",
+   "category": "installation",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "name",
+    "version",
+    "author",
+    "type"
+   ]
+  },
+  {
+   "id": "dissect_bam",
+   "glob": [
+    "dissect/bam.jsonl"
+   ],
+   "artifact": "BAM (Dissect)",
+   "category": "execution",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ]
+  },
+  {
+   "id": "dissect_browser_downloads",
+   "glob": [
+    "dissect/browser.downloads.jsonl"
+   ],
+   "artifact": "Browser (downloads, Dissect)",
+   "category": "browsing",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "url",
+    "tab_url",
+    "state",
+    "size",
+    "browser"
+   ]
+  },
+  {
+   "id": "dissect_browser_extensions",
+   "glob": [
+    "dissect/browser.extensions.jsonl"
+   ],
+   "artifact": "Browser (extensions)",
+   "category": "browsing",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path",
+    "manifest_path"
+   ],
+   "description": [
+    "name",
+    "id",
+    "version",
+    "browser",
+    "permissions"
+   ]
+  },
+  {
+   "id": "dissect_browser_history",
+   "glob": [
+    "dissect/browser.history.jsonl"
+   ],
+   "artifact": "Browser (history, Dissect)",
+   "category": "browsing",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "url"
+   ],
+   "description": [
+    "title",
+    "browser",
+    "visit_count",
+    "typed",
+    "from_url"
+   ]
+  },
+  {
+   "id": "dissect_iexplore_history",
+   "glob": [
+    "dissect/iexplore.history.jsonl"
+   ],
+   "artifact": "Internet Explorer / WebCache (history)",
+   "category": "browsing",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "url"
+   ],
+   "description": [
+    "title",
+    "visit_count"
+   ]
+  },
+  {
+   "id": "dissect_iexplore_downloads",
+   "glob": [
+    "dissect/iexplore.downloads.jsonl"
+   ],
+   "artifact": "Internet Explorer / WebCache (downloads)",
+   "category": "browsing",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "url",
+    "size"
+   ]
+  },
+  {
+   "id": "dissect_cim_consumerbindings",
+   "glob": [
+    "dissect/cim.consumerbindings.jsonl"
+   ],
+   "artifact": "WMI (permanent subscriptions)",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "filter_query",
+    "consumer",
+    "command",
+    "commandlinetemplate",
+    "scripttext",
+    "name"
+   ]
+  },
+  {
+   "id": "dissect_defender_exclusions",
+   "glob": [
+    "dissect/defender.exclusions.jsonl"
+   ],
+   "artifact": "Defender (exclusions)",
+   "category": "security",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "type",
+    "value"
+   ]
+  },
+  {
+   "id": "dissect_defender_mpcmdrun",
+   "glob": [
+    "dissect/defender.mpcmdrun.jsonl"
+   ],
+   "artifact": "Defender (MpCmdRun.log)",
+   "category": "security",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "message",
+    "command"
+   ]
+  },
+  {
+   "id": "dissect_defender_mplog",
+   "glob": [
+    "dissect/defender.mplog.jsonl"
+   ],
+   "artifact": "Defender (MPLog)",
+   "category": "security",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path",
+    "image_path"
+   ],
+   "description": [
+    "_record_type",
+    "process",
+    "threat",
+    "status",
+    "reason",
+    "plugin_states",
+    "sigsha"
+   ]
+  },
+  {
+   "id": "dissect_defender_quarantine",
+   "glob": [
+    "dissect/defender.quarantine.jsonl"
+   ],
+   "artifact": "Defender (quarantine)",
+   "category": "security",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "detection_name",
+    "type",
+    "id"
+   ]
+  },
+  {
+   "id": "dissect_firewall_logs",
+   "glob": [
+    "dissect/firewall.logs.jsonl"
+   ],
+   "artifact": "Firewall (log)",
+   "category": "network",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "action",
+    "protocol",
+    "src_ip",
+    "dst_ip",
+    "src_port",
+    "dst_port",
+    "path"
+   ]
+  },
+  {
+   "id": "dissect_firewall_rules",
+   "glob": [
+    "dissect/firewall.rules.jsonl"
+   ],
+   "artifact": "Firewall (rules)",
+   "category": "network",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "app"
+   ],
+   "description": [
+    "name",
+    "action",
+    "dir",
+    "protocol",
+    "lport",
+    "svc",
+    "active"
+   ]
+  },
+  {
+   "id": "dissect_mru_lastvisited",
+   "glob": [
+    "dissect/mru.lastvisited.jsonl"
+   ],
+   "artifact": "MRU LastVisited (Dissect)",
+   "category": "opened files",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "filename",
+    "index"
+   ]
+  },
+  {
+   "id": "dissect_mru_mstsc",
+   "glob": [
+    "dissect/mru.mstsc.jsonl"
+   ],
+   "artifact": "Remote Desktop (mstsc MRU)",
+   "category": "remote access",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "value",
+    "index"
+   ]
+  },
+  {
+   "id": "dissect_mru_networkdrive",
+   "glob": [
+    "dissect/mru.networkdrive.jsonl"
+   ],
+   "artifact": "Network drives (MRU)",
+   "category": "remote access",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "value",
+    "index"
+   ]
+  },
+  {
+   "id": "dissect_mru_opensave",
+   "glob": [
+    "dissect/mru.opensave.jsonl"
+   ],
+   "artifact": "MRU OpenSave (Dissect)",
+   "category": "opened files",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "value"
+   ],
+   "description": [
+    "index"
+   ]
+  },
+  {
+   "id": "dissect_mru_recentdocs",
+   "glob": [
+    "dissect/mru.recentdocs.jsonl"
+   ],
+   "artifact": "RecentDocs (Dissect)",
+   "category": "opened files",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "value"
+   ],
+   "description": [
+    "index"
+   ]
+  },
+  {
+   "id": "dissect_mru_run",
+   "glob": [
+    "dissect/mru.run.jsonl"
+   ],
+   "artifact": "Run dialog commands (RunMRU)",
+   "category": "execution",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "value",
+    "index"
+   ]
+  },
+  {
+   "id": "dissect_msoffice_startup",
+   "glob": [
+    "dissect/msoffice.startup.jsonl"
+   ],
+   "artifact": "Office (startup, persistence)",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "name"
+   ]
+  },
+  {
+   "id": "dissect_muicache",
+   "glob": [
+    "dissect/muicache.jsonl"
+   ],
+   "artifact": "MUICache",
+   "category": "execution",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "name",
+    "value"
+   ]
+  },
+  {
+   "id": "dissect_network_history",
+   "glob": [
+    "dissect/network_history.jsonl"
+   ],
+   "artifact": "Network history",
+   "category": "network",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "profile_name",
+    "description",
+    "dns_suffix",
+    "default_gateway_mac",
+    "first_network"
+   ]
+  },
+  {
+   "id": "dissect_notifications_wpndatabase",
+   "glob": [
+    "dissect/notifications.wpndatabase.jsonl"
+   ],
+   "artifact": "Windows notifications",
+   "category": "user activity",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "payload",
+    "text",
+    "handler"
+   ]
+  },
+  {
+   "id": "dissect_pfro",
+   "glob": [
+    "dissect/pfro.jsonl"
+   ],
+   "artifact": "PendingFileRenameOperations",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "operation"
+   ]
+  },
+  {
+   "id": "dissect_powershell_history",
+   "glob": [
+    "dissect/powershell_history.jsonl"
+   ],
+   "artifact": "PowerShell history (PSReadLine)",
+   "category": "execution",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "source"
+   ],
+   "description": [
+    "command",
+    "order"
+   ]
+  },
+  {
+   "id": "dissect_recentfilecache",
+   "glob": [
+    "dissect/recentfilecache.jsonl"
+   ],
+   "artifact": "RecentFileCache.bcf",
+   "category": "execution",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ]
+  },
+  {
+   "id": "dissect_recyclebin",
+   "glob": [
+    "dissect/recyclebin.jsonl"
+   ],
+   "artifact": "Recycle Bin (Dissect)",
+   "category": "deletion",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "deleted_path",
+    "filesize"
+   ]
+  },
+  {
+   "id": "dissect_remoteaccess_filetransfer",
+   "glob": [
+    "dissect/remoteaccess.filetransfer.jsonl"
+   ],
+   "artifact": "Remote access (transfers)",
+   "category": "remote access",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "message",
+    "filename"
+   ]
+  },
+  {
+   "id": "dissect_remoteaccess_incoming",
+   "glob": [
+    "dissect/remoteaccess.incoming.jsonl"
+   ],
+   "artifact": "Remote access (incoming connections)",
+   "category": "remote access",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "message",
+    "remote_ip",
+    "user"
+   ]
+  },
+  {
+   "id": "dissect_remoteaccess_logs",
+   "glob": [
+    "dissect/remoteaccess.logs.jsonl"
+   ],
+   "artifact": "Remote access (logs)",
+   "category": "remote access",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "message",
+    "description"
+   ]
+  },
+  {
+   "id": "dissect_runkeys",
+   "glob": [
+    "dissect/runkeys.jsonl"
+   ],
+   "artifact": "Run keys",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "regf_key_path",
+    "key"
+   ],
+   "description": [
+    "name",
+    "command"
+   ]
+  },
+  {
+   "id": "dissect_schedlgu",
+   "glob": [
+    "dissect/schedlgu.jsonl"
+   ],
+   "artifact": "SchedLgU.txt",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "job",
+    "status",
+    "command"
+   ]
+  },
+  {
+   "id": "dissect_search",
+   "glob": [
+    "dissect/search.jsonl"
+   ],
+   "artifact": "Windows Search (Dissect)",
+   "category": "file system",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "type",
+    "size",
+    "data"
+   ]
+  },
+  {
+   "id": "dissect_services",
+   "glob": [
+    "dissect/services.jsonl"
+   ],
+   "artifact": "Services (Dissect)",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "imagepath",
+    "servicedll"
+   ],
+   "description": [
+    "name",
+    "displayname",
+    "start",
+    "type",
+    "objectname",
+    "imagepath_args"
+   ]
+  },
+  {
+   "id": "dissect_startupinfo",
+   "glob": [
+    "dissect/startupinfo.jsonl"
+   ],
+   "artifact": "StartupInfo",
+   "category": "execution",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "commandline",
+    "pid",
+    "parent_pid"
+   ]
+  },
+  {
+   "id": "dissect_tasks",
+   "glob": [
+    "dissect/tasks.jsonl"
+   ],
+   "artifact": "Scheduled tasks (XML)",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "task_path"
+   ],
+   "path": [
+    "task_path"
+   ],
+   "description": [
+    "_record_type",
+    "uri",
+    "author",
+    "command",
+    "arguments",
+    "app_name",
+    "args",
+    "run_as",
+    "user_id",
+    "enabled"
+   ]
+  },
+  {
+   "id": "dissect_trusteddocs",
+   "glob": [
+    "dissect/trusteddocs.jsonl"
+   ],
+   "artifact": "Office TrustedDocuments",
+   "category": "opened files",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "value"
+   ]
+  },
+  {
+   "id": "dissect_usb",
+   "glob": [
+    "dissect/usb.jsonl"
+   ],
+   "artifact": "USB devices (Dissect)",
+   "category": "devices",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "description": [
+    "friendlyname",
+    "serial",
+    "vid",
+    "pid",
+    "product",
+    "vendor",
+    "type"
+   ]
+  },
+  {
+   "id": "dissect_userassist",
+   "glob": [
+    "dissect/userassist.jsonl"
+   ],
+   "artifact": "UserAssist (Dissect)",
+   "category": "execution",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "number_of_executions",
+    "application_focus_count",
+    "application_focus_duration"
+   ]
+  },
+  {
+   "id": "dissect_wer",
+   "glob": [
+    "dissect/wer.jsonl"
+   ],
+   "artifact": "Windows Error Reporting (WER)",
+   "category": "execution",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path",
+    "app_path"
+   ],
+   "description": [
+    "event_type",
+    "friendly_event_name",
+    "app_name",
+    "original_filename"
+   ]
+  },
+  {
+   "id": "dissect_windowsnotepad_tabs",
+   "glob": [
+    "dissect/windowsnotepad.tabs.jsonl"
+   ],
+   "artifact": "Windows 11 Notepad (tabs)",
+   "category": "user activity",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "path": [
+    "saved_path"
+   ],
+   "evidence": [
+    "source",
+    "path"
+   ],
+   "description": [
+    "saved_path",
+    "content",
+    "deleted_content"
+   ],
+   "note": "Saved tabs: ts timestamp (modification) in the timeline; never-saved tabs: no timestamp, raw table only (content, deleted content)."
+  },
+  {
+   "id": "dissect_clsid_user",
+   "glob": [
+    "dissect/clsid.user.jsonl"
+   ],
+   "artifact": "COM objects (HKCU CLSID, Dissect)",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "value",
+    "regf_key_path"
+   ],
+   "description": [
+    "clsid",
+    "name",
+    "value"
+   ],
+   "note": "COM hijacking: per-user CLSID registrations (HKCU\\Software\\Classes\\CLSID) take precedence over HKLM; an InprocServer32 / LocalServer32 outside System32, SysWOW64 or Program Files must be explained."
+  },
+  {
+   "id": "dissect_appinit",
+   "glob": [
+    "dissect/appinit.jsonl"
+   ],
+   "artifact": "AppInit_DLLs (Dissect)",
+   "category": "persistence",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path",
+    "value"
+   ],
+   "description": [
+    "name",
+    "path",
+    "value"
+   ],
+   "note": "Any non-empty AppInit_DLLs value (with LoadAppInit_DLLs = 1) is loaded into every process linked to user32.dll: persistence / injection to be explained."
+  },
+  {
+   "id": "dissect_thumbcache",
+   "glob": [
+    "dissect/thumbcache.thumbcache.jsonl"
+   ],
+   "artifact": "Thumbcache (Dissect)",
+   "category": "user activity",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "path"
+   ],
+   "path": [
+    "path"
+   ],
+   "description": [
+    "identifier",
+    "extension",
+    "hash",
+    "size"
+   ],
+   "note": "Thumbnails of images / documents viewed in Explorer, including files deleted since; the identifier links to the Windows Search index (System_ThumbnailCacheId)."
+  },
+  {
+   "id": "dissect_sevenzip",
+   "glob": [
+    "dissect/sevenzip.jsonl"
+   ],
+   "artifact": "7-Zip history (Dissect)",
+   "category": "user activity",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path",
+    "archive"
+   ],
+   "description": [
+    "path",
+    "archive",
+    "name",
+    "value"
+   ],
+   "note": "Archives opened / created with 7-Zip (ArcHistory, PathHistory, CopyHistory): staging of data before exfiltration."
+  },
+  {
+   "id": "dissect_other",
+   "glob": [
+    "dissect/*.jsonl"
+   ],
+   "artifact": "Dissect (other plugin)",
+   "category": "unclassified",
+   "tool": "Dissect",
+   "times": [],
+   "format": "dissect",
+   "table_per_file": true,
+   "user": [
+    "username"
+   ],
+   "host": [
+    "hostname"
+   ],
+   "evidence": [
+    "source",
+    "regf_hive_path",
+    "source_log",
+    "task_path"
+   ],
+   "path": [
+    "path",
+    "url",
+    "source"
+   ],
+   "description": [
+    "_record_type",
+    "name",
+    "value",
+    "command",
+    "description"
+   ],
+   "note": "Dissect plugin without a dedicated entry: dates taken from the recorddescriptors."
+  }
+ ]
+}

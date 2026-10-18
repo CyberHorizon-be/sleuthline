@@ -1,0 +1,432 @@
+{
+    "_doc": "Exact versions of the reference VM. Produced by install\\Export-ToolsLock.ps1; used by Install-All.ps1 -Locked.",
+    "generated_at": "2026-10-18T22:34:19.1648825+02:00",
+    "generated_on": "WINDOWS-TEST",
+    "python": "Python 3.12.10",
+    "tools": {
+        "Hindsight": {
+            "name": "Hindsight (Chromium browsers)",
+            "version": "v2026.06",
+            "sha256": "69BEAAEC4F29EA36734CA9115E6C002FC43ED918D860794E1641D3AC9F129BD7",
+            "kind": "release",
+            "release_tag": "v2026.06",
+            "downloads": {
+                "https://github.com/RyanDFIR/hindsight/releases/download/v2026.06/hindsight.exe": "69BEAAEC4F29EA36734CA9115E6C002FC43ED918D860794E1641D3AC9F129BD7"
+            }
+        },
+        "Plaso": {
+            "name": "plaso (log2timeline)",
+            "version": "plaso 20260720",
+            "sha256": null,
+            "kind": "pip"
+        },
+        "Sigma": {
+            "name": "SigmaHQ rules",
+            "version": "r2026-07-01",
+            "sha256": "5725C91B5813587AD6A4B0B8E0233FA44348B1595F818D8B7FD39D6033385085",
+            "kind": "release",
+            "release_tag": "r2026-07-01",
+            "downloads": {
+                "https://github.com/SigmaHQ/sigma/releases/download/r2026-07-01/sigma_all_rules.zip": "5725C91B5813587AD6A4B0B8E0233FA44348B1595F818D8B7FD39D6033385085"
+            }
+        },
+        "Zircolite": {
+            "name": "Zircolite",
+            "version": "v4.6.0",
+            "sha256": "8FB0F696E8CECD9C434EC2282EB07A086DF617D72B5AD86CEBEFA8EECE5E5917",
+            "kind": "release",
+            "release_tag": "v4.6.0",
+            "downloads": {
+                "https://github.com/wagga40/Zircolite/releases/download/v4.6.0/Zircolite-4.6.0-windows-x64.zip": "8FB0F696E8CECD9C434EC2282EB07A086DF617D72B5AD86CEBEFA8EECE5E5917"
+            }
+        },
+        "SIDR": {
+            "name": "SIDR (Windows Search)",
+            "version": "v0.9.2",
+            "sha256": "634BE2A03263F0C83CC6CA5DFB1A582F3072BBC320490418DCB0DCEBE0474C97",
+            "kind": "release",
+            "release_tag": "v0.9.2",
+            "downloads": {
+                "https://github.com/strozfriedberg/sidr/releases/download/v0.9.2/sidr.exe": "634BE2A03263F0C83CC6CA5DFB1A582F3072BBC320490418DCB0DCEBE0474C97"
+            }
+        },
+        "Hayabusa": {
+            "name": "Hayabusa",
+            "version": "v4.2.0",
+            "sha256": "E8E49805BF94F5FEB425CFFAE904F526257C1B6BF8DEDFA07C28E9AA585A387B",
+            "kind": "release",
+            "release_tag": "v4.2.0",
+            "downloads": {
+                "https://github.com/Yamato-Security/hayabusa/releases/download/v4.2.0/hayabusa-4.2.0-win-x64.zip": "E8E49805BF94F5FEB425CFFAE904F526257C1B6BF8DEDFA07C28E9AA585A387B"
+            }
+        },
+        "LogFileParser": {
+            "name": "LogFileParser ($LogFile)",
+            "version": "v2.0.0.53",
+            "sha256": "68FB4F9F54135E1951FEBF825DE37E47FE13B2AC2733FCC63E8FE26DD729E58A",
+            "kind": "release",
+            "release_tag": "v2.0.0.53",
+            "downloads": {
+                "https://github.com/jschicht/LogFileParser/releases/download/v2.0.0.53/LogFileParser_v2.0.0.53.zip": "68FB4F9F54135E1951FEBF825DE37E47FE13B2AC2733FCC63E8FE26DD729E58A"
+            }
+        },
+        "Chainsaw": {
+            "name": "Chainsaw",
+            "version": "v2.17.1",
+            "sha256": "74B9EA341E31C0A704A79C0E779C2F6E31670F1F43CAD3B450B21A91639DBEC3",
+            "kind": "release",
+            "release_tag": "v2.17.1",
+            "downloads": {
+                "https://github.com/WithSecureOpenSource/chainsaw/releases/download/v2.17.1/chainsaw_all_platforms%2Brules.zip": "74B9EA341E31C0A704A79C0E779C2F6E31670F1F43CAD3B450B21A91639DBEC3"
+            }
+        },
+        "EZTools": {
+            "name": "EZTools (Eric Zimmerman)",
+            "version": "latest (2026-10-18, net9)",
+            "sha256": "7CDF8356400351612875AC2E1E26EDDE084B5F738242790D32AE0C83883F548B",
+            "kind": "eztools",
+            "files": {
+                "JLECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "CBD90BB99B308B3168C4B43A87FF5D774D58E2D9785DB0A2DA935A3FA9A419A4"
+                },
+                "LECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "2D681F6239B8A4270A489E938F4873736EE0E3DB1EE9E241B9D266291F6036DD"
+                },
+                "WxTCmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "06656E3EFDA1305776400BB2DB46FABA2C7314888BA3F2E7C717BA0F5FF14AE7"
+                },
+                "RECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "89B1FF3AD30D79BF919F5BFEFA755B25CC067815E8E11052C2D52392122C0387"
+                },
+                "SBECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "2234A9910C3F13B0DDFFF3ECFFBE1C86D53BB6CC91366596E633F9FFD0C74CD1"
+                },
+                "bstrings": {
+                    "version": "2026.5.0.0",
+                    "sha256": "403B591AA387A9A226078CB71BB13846AEA5EC9C5CADF6F4F85789276541A65A"
+                },
+                "SQLECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "E968F16258A073A6CDE36041B828D5C798EBA6EEF8656E3ED851A60DECA51696"
+                },
+                "RBCmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "2B171799F1E46FA7DD6CE708E67BB8C37FD6A95F440635F9F519EB5BA48EFC0A"
+                },
+                "SrumECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "DFA922DC6AFB53FED72EED01156B0228C0D86E020BD47C67A52A1A8E9B8153DD"
+                },
+                "AppCompatCacheParser": {
+                    "version": "2026.5.0.0",
+                    "sha256": "587CC7A151B3CC1F75589DAD8C53EF06BB68A7847BEF0A9D15D52698249C0583"
+                },
+                "AmcacheParser": {
+                    "version": "2026.5.0.0",
+                    "sha256": "344F5C8F289777677D2F7F93CA8525705F4670025331A56E88FDFD8BB8FA5F1A"
+                },
+                "PECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "8EF7357917C363641AF503C95AE63CF132A717E0BB86748AE01EE2584C517CBE"
+                },
+                "MFTECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "2F0251FF15E5C3559967523661E2BB77DC4A1CBC7AE56AA146C9C65270A517F6"
+                },
+                "SumECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "FB898923F9713E428080F32AEFC4FE4B3E541254D811B8AE181E4F4E41E6742F"
+                },
+                "RecentFileCacheParser": {
+                    "version": "2026.5.0.0",
+                    "sha256": "10669C137EF644A3D60308FFC67DC257203FB38C1E9D12DB5C4DB37D5F37607F"
+                },
+                "EvtxECmd": {
+                    "version": "2026.5.0.0",
+                    "sha256": "DE169B2AC7F6B1E54A684E0CDDDA30223651937B75941B21EA53A98F5A2502EE"
+                }
+            }
+        },
+        "BmcTools": {
+            "name": "bmc-tools (RDP bitmap cache)",
+            "version": "branch master",
+            "sha256": "A2B73BA030920EC795AAD232FFBACD25D8A582BCFC957B242D9C347A9C37AC27",
+            "kind": "source",
+            "commit": "5a4cad32be78b3b874aeec910cb478e04ba3501e",
+            "downloads": {
+                "https://github.com/ANSSI-FR/bmc-tools/archive/5a4cad32be78b3b874aeec910cb478e04ba3501e.zip": "A2B73BA030920EC795AAD232FFBACD25D8A582BCFC957B242D9C347A9C37AC27"
+            },
+            "note": "installed from the master branch: commit resolved at export time (2026-10-18), reinstall with -ForceTools for an exact lock"
+        },
+        "Dissect": {
+            "name": "Dissect (Fox-IT)",
+            "version": "dissect.target 3.25.1",
+            "sha256": null,
+            "kind": "pip"
+        },
+        "BitsParser": {
+            "name": "BitsParser (BITS)",
+            "version": "branch master",
+            "sha256": "7B37C9AB11869CFBFA5D92A2CE3CF44A6D268814E8AAC0E9CBF0E52DC50D1F08",
+            "kind": "source",
+            "commit": "0a2b51eeec79c5e181d8fc526d5715552299c45f",
+            "downloads": {
+                "https://github.com/fireeye/BitsParser/archive/0a2b51eeec79c5e181d8fc526d5715552299c45f.zip": "7B37C9AB11869CFBFA5D92A2CE3CF44A6D268814E8AAC0E9CBF0E52DC50D1F08"
+            },
+            "note": "installed from the master branch: commit resolved at export time (2026-10-18), reinstall with -ForceTools for an exact lock"
+        },
+        "WMIForensics": {
+            "name": "WMI_Forensics (WMI persistence)",
+            "version": "branch master",
+            "sha256": "9F7B4085F049CCAECE1261174B4A1888B137F8C2CFD5D95CF7A2672008AD75E6",
+            "kind": "source",
+            "commit": "0ab08dca7938d26846497be9e450b7bb2ca7fff3",
+            "downloads": {
+                "https://github.com/davidpany/WMI_Forensics/archive/0ab08dca7938d26846497be9e450b7bb2ca7fff3.zip": "9F7B4085F049CCAECE1261174B4A1888B137F8C2CFD5D95CF7A2672008AD75E6"
+            },
+            "note": "installed from the master branch: commit resolved at export time (2026-10-18), reinstall with -ForceTools for an exact lock"
+        },
+        "OneDriveODL": {
+            "name": "odl.py (OneDrive logs)",
+            "version": "branch main",
+            "sha256": "82FA197C7DB714ECA8C60488C60B9F1309B722104F9B814E072A8281C73AE9D0",
+            "kind": "source",
+            "commit": "9ad135ecf56cd2086256cf8440b98b5eaa50c0ab",
+            "downloads": {
+                "https://github.com/ydkhatri/OneDrive/archive/9ad135ecf56cd2086256cf8440b98b5eaa50c0ab.zip": "82FA197C7DB714ECA8C60488C60B9F1309B722104F9B814E072A8281C73AE9D0"
+            },
+            "note": "installed from the main branch: commit resolved at export time (2026-10-18), reinstall with -ForceTools for an exact lock"
+        }
+    },
+    "venvs": {
+        "bitsparser": [
+            "bits_parser==1.0.1",
+            "construct==2.8.12",
+            "docopt==0.6.2",
+            "packaging==26.3",
+            "setuptools==84.0.0",
+            "wheel==0.48.0"
+        ],
+        "bmc-tools": [
+            "packaging==26.3",
+            "setuptools==84.0.0",
+            "wheel==0.48.0"
+        ],
+        "dissect": [
+            "asn1crypto==1.5.1",
+            "asttokens==3.0.2",
+            "backports.zstd==1.8.0",
+            "colorama==0.4.6",
+            "defusedxml==0.7.1",
+            "dissect==3.22",
+            "dissect.apfs==1.1",
+            "dissect.archive==1.8",
+            "dissect.btrfs==1.10",
+            "dissect.cim==3.13",
+            "dissect.clfs==1.11",
+            "dissect.cramfs==1.1",
+            "dissect.cstruct==4.7",
+            "dissect.database==1.1",
+            "dissect.etl==3.14",
+            "dissect.eventlog==3.11",
+            "dissect.evidence==3.13",
+            "dissect.executable==1.11",
+            "dissect.extfs==3.15",
+            "dissect.fat==3.13",
+            "dissect.ffs==3.12",
+            "dissect.fve==4.6",
+            "dissect.hypervisor==3.21",
+            "dissect.jffs==1.6",
+            "dissect.ntfs==3.16",
+            "dissect.ole==3.12",
+            "dissect.qnxfs==1.2",
+            "dissect.regf==3.14",
+            "dissect.shellitem==3.13",
+            "dissect.squashfs==1.12",
+            "dissect.target==3.25.1",
+            "dissect.thumbcache==1.11",
+            "dissect.util==3.24",
+            "dissect.vmfs==3.13",
+            "dissect.volume==3.18",
+            "dissect.xfs==3.13",
+            "executing==2.3.0",
+            "flow.record==3.21",
+            "fusepy==3.0.1",
+            "ipython==9.17.1",
+            "ipython_pygments_lexers==1.1.1",
+            "jedi==0.20.1",
+            "matplotlib-inline==0.2.2",
+            "msgpack==1.2.3",
+            "packaging==26.3",
+            "parso==0.8.7",
+            "prompt_toolkit==3.0.53",
+            "psutil==7.2.2",
+            "pure_eval==0.2.4",
+            "pycryptodome==4.0.1",
+            "Pygments==2.21.0",
+            "ruamel.yaml==0.19.1",
+            "setuptools==84.0.0",
+            "stack-data==0.6.3",
+            "structlog==26.1.0",
+            "traitlets==5.16.1",
+            "tzdata==2026.5",
+            "wcwidth==0.9.2",
+            "wheel==0.48.0"
+        ],
+        "hindsight": [
+            "bottle==0.13.4",
+            "jaraco.classes==3.4.0",
+            "jaraco.context==6.1.2",
+            "jaraco.functools==4.6.0",
+            "keyring==25.7.0",
+            "markdown-it-py==4.2.0",
+            "mdurl==0.1.2",
+            "more-itertools==11.2.1",
+            "packaging==26.3",
+            "protobuf==7.36.2",
+            "puremagic==2.2.0",
+            "pycryptodomex==3.24.1",
+            "Pygments==2.21.0",
+            "pyhindsight==20260600",
+            "pywin32==312",
+            "pywin32-ctypes==0.2.3",
+            "rich==15.0.0",
+            "setuptools==84.0.0",
+            "tzdata==2026.5",
+            "wheel==0.48.0",
+            "xlsxwriter==3.2.9"
+        ],
+        "onedrive-odl": [
+            "construct==2.10.70",
+            "packaging==26.3",
+            "pycryptodome==4.0.1",
+            "setuptools==84.0.0",
+            "wheel==0.48.0"
+        ],
+        "orchestrator": [
+            "colorama==0.4.6",
+            "duckdb==1.5.6",
+            "enum-compat==0.0.3",
+            "hexdump==3.3",
+            "libesedb-python==20260704",
+            "lxml==6.1.3",
+            "markdown-it-py==4.2.0",
+            "mdurl==0.1.2",
+            "numpy==2.5.4",
+            "orjson==3.13.0",
+            "packaging==26.3",
+            "pandas==3.0.6",
+            "pyarrow==26.0.0",
+            "Pygments==2.21.0",
+            "python-dateutil==2.9.0.post0",
+            "python-docx==1.2.0",
+            "python-evtx==0.8.1",
+            "python-registry==1.3.1",
+            "PyYAML==6.0.3",
+            "rich==15.0.0",
+            "setuptools==84.0.0",
+            "six==1.17.0",
+            "tqdm==4.70.1",
+            "typing_extensions==4.16.0",
+            "tzdata==2026.5",
+            "unicodecsv==0.14.1",
+            "wheel==0.48.0"
+        ],
+        "plaso": [
+            "acstore==20260411",
+            "artifacts==20260421",
+            "bencode.py==4.1.0",
+            "certifi==2026.10.18",
+            "charset-normalizer==3.5.2",
+            "defusedxml==0.7.1",
+            "dfdatetime==20260730",
+            "dfvfs==20260924",
+            "dfwinreg==20260411",
+            "dtfabric==20260506",
+            "Events==0.5",
+            "Flor==1.1.3",
+            "grpcio==1.84.0",
+            "idna==3.20",
+            "libbde-python==20260916",
+            "libcaes-python==20260905",
+            "libcreg-python==20260523",
+            "libesedb-python==20260704",
+            "libevt-python==20260705",
+            "libevtx-python==20260705",
+            "libewf-python==20260924",
+            "libfcrypto-python==20260521",
+            "libfsapfs-python==20260921",
+            "libfsext-python==20260821",
+            "libfsfat-python==20260826",
+            "libfshfs-python==20260922",
+            "libfsntfs-python==20260827",
+            "libfsxfs-python==20260901",
+            "libfvde-python==20260923",
+            "libfwnt-python==20260602",
+            "libfwsi-python==20260522",
+            "liblnk-python==20260525",
+            "libluksde-python==20260902",
+            "libmodi-python==20260902",
+            "libmsiecf-python==20260525",
+            "libolecf-python==20260526",
+            "libphdi-python==20260902",
+            "libqcow-python==20260703",
+            "libregf-python==20260526",
+            "libscca-python==20260527",
+            "libsigscan-python==20260902",
+            "libsmdev-python==20260902",
+            "libsmraw-python==20260902",
+            "libvhdi-python==20260901",
+            "libvmdk-python==20260714",
+            "libvsapm-python==20260713",
+            "libvsgpt-python==20260911",
+            "libvshadow-python==20260714",
+            "libvslvm-python==20260901",
+            "lz4==4.4.5",
+            "opensearch-protobufs==1.2.0",
+            "opensearch-py==3.2.0",
+            "packaging==26.3",
+            "pefile==2024.8.26",
+            "plaso==20260720",
+            "protobuf==7.36.2",
+            "psutil==7.2.2",
+            "pyparsing==3.3.3",
+            "python-dateutil==2.9.0.post0",
+            "pytsk3==20260715",
+            "pytz==2026.5",
+            "PyYAML==6.0.3",
+            "pyzmq==27.2.0",
+            "redis==8.1.0",
+            "requests==2.34.2",
+            "setuptools==84.0.0",
+            "six==1.17.0",
+            "typing_extensions==4.16.0",
+            "urllib3==2.8.0",
+            "wheel==0.48.0",
+            "xlsxwriter==3.2.9",
+            "yara-python==4.5.4",
+            "zstd==1.5.7.2"
+        ],
+        "zircolite": [
+            "packaging==26.3",
+            "setuptools==84.0.0",
+            "wheel==0.48.0"
+        ]
+    },
+    "trees": {
+        "hayabusa\\rules": "444B48997568F80DEE8E17EAB62F065DE9E65B2DFDD2D4769EF218D36B2B7BDA",
+        "hayabusa\\config": "1680CD8FEF6170DE2834A0275CD8146C6C5953BBD5020B2516676A046657D583",
+        "chainsaw\\rules": "EE644F1E0BB8E17157E51A134F97E6C2C0D6B4BECFBD4FA852B8F6111FE10094",
+        "chainsaw\\mappings": "6F30AA99EE625B6653FE868CCB0AAB7098910DDC8E529BE8D2CD77B66E963D1B",
+        "zircolite\\rules": "2726CEB9051A626BB86BA68F3CF7F418C462EF7A531AAD4891FD023A90CB8ADE",
+        "EZTools\\net9\\EvtxeCmd\\Maps": "877B31CA3675CBA147ABCA90BD8618ADC273AECDB68AF36CD334BC1222B7CDC3",
+        "EZTools\\net9\\RECmd\\BatchExamples": "B289430E610084598543F66CFB881A56D5F1EE064572D828C9E1A49087A2F5E0",
+        "EZTools\\net9\\RECmd\\Plugins": "E84CBEDEBBE10951D291CAD8C02926FFB03FDD05403C8ECF8681C61DA1C2D27C",
+        "EZTools\\net9\\SQLECmd\\Maps": "374A9154C824AE5D44B3A56D2864C45CEE39E78440115268FB0629E5F966A325"
+    }
+}

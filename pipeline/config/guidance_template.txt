@@ -1,0 +1,52 @@
+# ============================================================================
+# Analysis guidance: fill in before running analyze.py (everything is optional)
+# ----------------------------------------------------------------------------
+# Lines starting with # are comments. Sections are between [ ].
+# The agent reads this file at the start of every step: context, questions,
+# IOCs, instructions. The IOCs are also searched automatically across the
+# whole database before the analysis (IOC sweep).
+# Question-only mode (without running the whole analysis again):
+#   sleuthline.ps1 ask <case> "Where does setup.exe come from?"
+# ============================================================================
+
+[CONTEXT]
+# What is known about the incident: original alert, symptoms, people involved...
+# Example: EDR alert on 2023-11-10 around 10:40 UTC, workstation of user medmondson,
+#          suspected download of a remote administration tool.
+
+
+[PERIOD]
+# Window of interest in UTC (format YYYY-MM-DD HH:MM). Leave empty if unknown.
+start =
+end =
+
+
+[QUESTIONS]
+# One question per line, starting with "-". The agent answers each one in the report.
+# - How did the attacker get into the machine?
+# - Was any data exfiltrated?
+# - Which accounts were compromised?
+
+
+[IOC]
+# One indicator per line: type = value   # optional comment
+# Types: sha1, sha256, md5, file, path, ip, domain, url, user, sid,
+#        registry, service, task, command, text
+# sha256 = 0123abcd...           # sample reported by the EDR
+# ip = 203.0.113.45
+# domain = evil.example.com
+# file = AnyDesk.exe
+
+
+[SUSPECTS]
+# Accounts, machines or processes already suspected (one per line).
+
+
+[EXCLUSIONS]
+# What must be considered legitimate and ignored (one per line).
+# By default, the agent already rules out the collection and analysis activity (KAPE, C:\Sleuthline...).
+
+
+[INSTRUCTIONS]
+# Free instructions for the agent (priorities, steps to dig into...).
+# The report language is set in config\llm_config.json ("report_language").

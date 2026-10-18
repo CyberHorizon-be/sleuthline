@@ -1,0 +1,23 @@
+# ============================================================================
+# API keys of the language models used by the analysis agent (analyze.py)
+# ----------------------------------------------------------------------------
+# Copy this file to api_keys.txt (same folder) and fill in ONLY the line of the
+# provider you use (active profile of llm_config.json), without quotes:
+#   NAME = value
+#
+# api_keys.txt is excluded from git (.gitignore): never commit or share it.
+# The installer deploys it with the pipeline (<root>\pipeline\config\).
+# An environment variable with the same name, if set, takes precedence.
+# Local models (Ollama, LM Studio...) need no key.
+# ============================================================================
+
+# Claude (Anthropic): profiles "claude" and "claude-sonnet"
+ANTHROPIC_API_KEY =
+
+# OpenAI: profile "openai"
+OPENAI_API_KEY =
+
+# Other OpenAI-compatible providers (reference them with "api_key_env" in llm_config.json)
+MISTRAL_API_KEY =
+OPENROUTER_API_KEY =
+AZURE_OPENAI_API_KEY =

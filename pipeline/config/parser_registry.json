@@ -1,0 +1,918 @@
+{
+ "policy": "POLICY_parsers.md",
+ "updated_at": "2026-10-18",
+ "artifacts": {
+  "ntfs_mft": {
+   "label": "$MFT",
+   "parsers": [
+    "MFTECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "ntfs_usnjrnl": {
+   "label": "$UsnJrnl:$J",
+   "parsers": [
+    "MFTECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "ntfs_logfile": {
+   "label": "$LogFile",
+   "parsers": [
+    "LogFileParser",
+    "MFTECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "ntfs_boot": {
+   "label": "$Boot",
+   "parsers": [
+    "MFTECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "ntfs_sds": {
+   "label": "$Secure:$SDS",
+   "parsers": [
+    "MFTECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "ntfs_other": {
+   "label": "Other NTFS metadata",
+   "parsers": [],
+   "how": "",
+   "type": "context",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "$UsnJrnl:$Max, $TxfLog...: context only"
+  },
+  "evtx": {
+   "label": "Event logs (EVTX)",
+   "parsers": [
+    "hayabusa",
+    "chainsaw",
+    "zircolite",
+    "EvtxECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "prefetch": {
+   "label": "Prefetch",
+   "parsers": [
+    "PECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "amcache": {
+   "label": "Amcache.hve",
+   "parsers": [
+    "AmcacheParser"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "amcache_logs": {
+   "label": "Amcache (transaction logs)",
+   "parsers": [
+    "AmcacheParser"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "recentfilecache": {
+   "label": "RecentFileCache.bcf",
+   "parsers": [
+    "RecentFileCacheParser"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "Windows 7 / 2008 R2 only"
+  },
+  "srum": {
+   "label": "SRUM (SRUDB.dat)",
+   "parsers": [
+    "SrumECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "srum_logs": {
+   "label": "SRUM (ESE logs)",
+   "parsers": [
+    "SrumECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "ESE side files, used for SRUDB.dat consistency"
+  },
+  "sum_ual": {
+   "label": "User Access Logging (SUM)",
+   "parsers": [
+    "SumECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "Windows Server only"
+  },
+  "pca": {
+   "label": "Program Compatibility Assistant",
+   "parsers": [
+    "log2timeline"
+   ],
+   "how": "log2timeline --parsers winpca_db0,winpca_dic",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://plaso.readthedocs.io/en/latest/sources/user/Parsers-and-plugins.html"
+   ],
+   "justification": "Windows 11 22H2+."
+  },
+  "reg_system": {
+   "label": "SYSTEM hive",
+   "parsers": [
+    "RECmd",
+    "AppCompatCacheParser"
+   ],
+   "how": "RECmd --bn Kroll_Batch.reb then --bn pipeline\\config\\recmd\\Sleuthline_Complement.reb (job recmd_complement: EMDMgmt, Active Setup, Print Monitors/Processors, BootExecute/SetupExecute/Execute, PCA Store/Persisted)",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RECmd/tree/master/BatchExamples"
+   ],
+   "justification": ""
+  },
+  "reg_software": {
+   "label": "SOFTWARE hive",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "RECmd --bn Kroll_Batch.reb then --bn pipeline\\config\\recmd\\Sleuthline_Complement.reb (job recmd_complement: EMDMgmt, Active Setup, Print Monitors/Processors, BootExecute/SetupExecute/Execute, PCA Store/Persisted)",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RECmd/tree/master/BatchExamples"
+   ],
+   "justification": ""
+  },
+  "reg_sam": {
+   "label": "SAM hive",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "reg_security": {
+   "label": "SECURITY hive",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "reg_default": {
+   "label": "DEFAULT hive",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "reg_regback": {
+   "label": "RegBack hives (backups)",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "reg_ntuser": {
+   "label": "NTUSER.DAT",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "RECmd --bn Kroll_Batch.reb then --bn pipeline\\config\\recmd\\Sleuthline_Complement.reb (job recmd_complement: EMDMgmt, Active Setup, Print Monitors/Processors, BootExecute/SetupExecute/Execute, PCA Store/Persisted)",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RECmd/tree/master/BatchExamples"
+   ],
+   "justification": ""
+  },
+  "reg_usrclass": {
+   "label": "UsrClass.dat (ShellBags)",
+   "parsers": [
+    "RECmd",
+    "SBECmd"
+   ],
+   "how": "RECmd --bn Kroll; SBECmd -d <Users> WITHOUT --nl (otherwise the transaction logs are ignored)",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "reg_txlogs": {
+   "label": "Registry transaction logs",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "Replayed by RECmd for dirty hives"
+  },
+  "lnk": {
+   "label": "LNK files (Recent)",
+   "parsers": [
+    "LECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "jumplists": {
+   "label": "Jump Lists",
+   "parsers": [
+    "JLECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "recyclebin_i": {
+   "label": "Recycle Bin ($I)",
+   "parsers": [
+    "RBCmd",
+    "dissect"
+   ],
+   "how": "RBCmd -d <folder>; target-query -f recyclebin",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://ericzimmerman.github.io/",
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html"
+   ],
+   "justification": ""
+  },
+  "recyclebin_r": {
+   "label": "Recycle Bin ($R, deleted content)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f recyclebin ($I/$R correlation)",
+   "type": "tool",
+   "alternatives": [
+    "RBCmd ($I only)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html",
+    "https://ericzimmerman.github.io/"
+   ],
+   "justification": "RBCmd handles the $I files; Dissect links $I and $R."
+  },
+  "timeline": {
+   "label": "Windows Timeline (ActivitiesCache.db)",
+   "parsers": [
+    "WxTCmd"
+   ],
+   "how": "Working copy (database + -wal/-shm) then WxTCmd -f <copy>; output stored under the original path (parsed\\wxtcmd\\C\\Users\\<u>\\AppData\\Local\\ConnectedDevicesPlatform\\<account>\\) to cite the evidence",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "WxTCmd does not write the source database in its CSV: the original path is rebuilt from the output folder (normalize_map.json, wxt_activity.evidence). Fixed on 2026-10-18."
+  },
+  "search_index": {
+   "label": "Windows Search index",
+   "parsers": [
+    "sidr",
+    "dissect"
+   ],
+   "how": "Working copy (database + logs) then esentutl /r on the copy, then sidr -f csv; in addition target-query -f search",
+   "type": "tool",
+   "alternatives": [
+    "esentutl /p (destructive, interactive repair: ruled out)",
+    "libesedb esedbexport"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/strozfriedberg/sidr",
+    "https://learn.microsoft.com/windows-server/administration/windows-commands/esentutl",
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html"
+   ],
+   "justification": "ESE database copied live = dirty state (+ corrupted page on test02): SIDR fails with code 0. Log replay on a copy (built-in Windows tool); Dissect reads the index through another ESE implementation."
+  },
+  "search_index_logs": {
+   "label": "Windows Search index (side files)",
+   "parsers": [
+    "sidr"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "ps_history": {
+   "label": "PowerShell history (PSReadLine)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f powershell_history",
+   "type": "tool",
+   "alternatives": [
+    "direct text reading"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html"
+   ],
+   "justification": "Adds the user and the file timestamp."
+  },
+  "notifications": {
+   "label": "Notifications (wpndatabase.db)",
+   "parsers": [
+    "SQLECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "chromium": {
+   "label": "Chromium browsers (Chrome / Edge / Brave)",
+   "parsers": [
+    "hindsight",
+    "SQLECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "firefox": {
+   "label": "Firefox",
+   "parsers": [
+    "SQLECmd"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "webcache": {
+   "label": "WebCache (IE / legacy Edge, ESE)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f iexplore.history (ESE WebCacheV01.dat: history + downloads)",
+   "type": "tool",
+   "alternatives": [
+    "plaso esedb/msie_webcache",
+    "NirSoft BrowsingHistoryView (GUI, proprietary)",
+    "IE10Analyzer (GUI)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html",
+    "https://plaso.readthedocs.io/en/latest/sources/user/Parsers-and-plugins.html",
+    "https://github.com/fox-it/dissect.target/blob/main/dissect/target/plugins/apps/browser/iexplore.py"
+   ],
+   "justification": "Dissect reads the KAPE output directly and produces exportable records; checked in the source code."
+  },
+  "edge_legacy": {
+   "label": "Legacy Edge (UWP): cache and data",
+   "parsers": [],
+   "how": "",
+   "type": "context",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "Raw cache files; history is in WebCacheV01.dat"
+  },
+  "ie_cache": {
+   "label": "Internet Explorer cache / INetCache",
+   "parsers": [],
+   "how": "",
+   "type": "context",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "Raw content, context only"
+  },
+  "sched_tasks": {
+   "label": "Scheduled tasks (XML)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f tasks",
+   "type": "tool",
+   "alternatives": [
+    "Greg (Pr0t3an)",
+    "plaso winreg/windows_task_cache (registry cache only)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html",
+    "https://www.github.com/Pr0t3an/Greg"
+   ],
+   "justification": "Maintained plugin, same framework as the other artifacts without a dedicated parser."
+  },
+  "wmi_repo": {
+   "label": "WMI repository (OBJECTS.DATA)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f cim.consumerbindings (ActiveScript / CommandLine consumers and their bindings)",
+   "type": "tool",
+   "alternatives": [
+    "PyWMIPersistenceFinder (WMI_Forensics, Python 2 only)",
+    "woanware/wmi-parser",
+    "flare-wmi (python-cim)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html",
+    "https://github.com/davidpany/WMI_Forensics",
+    "https://github.com/woanware/wmi-parser"
+   ],
+   "justification": "Avoids a home-made Python 3 port of PyWMIPersistenceFinder (POLICY_parsers.md rule); maintained plugin."
+  },
+  "startup": {
+   "label": "Startup folders",
+   "parsers": [
+    "native"
+   ],
+   "how": "\"native\" job of orchestrator.py: one record per file (original CopyLog timestamps, SHA-256) -> native/startup.jsonl",
+   "type": "trivial",
+   "alternatives": [
+    "RECmd (Run keys, complementary)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "No format to decode: list of files."
+  },
+  "bits": {
+   "label": "BITS jobs (qmgr)",
+   "parsers": [
+    "BitsParser"
+   ],
+   "how": "",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": ""
+  },
+  "rdp_cache": {
+   "label": "RDP bitmap cache",
+   "parsers": [
+    "bmc-tools",
+    "dissect"
+   ],
+   "how": "bmc-tools.py -s <cache> -d <output> -k; target-query -f rdpcache.paths",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/ANSSI-FR/bmc-tools",
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html"
+   ],
+   "justification": "Only present if the host opened outbound RDP sessions"
+  },
+  "setupapi": {
+   "label": "setupapi.dev.log (USB devices)",
+   "parsers": [
+    "log2timeline"
+   ],
+   "how": "log2timeline --parsers text/setupapi",
+   "type": "tool",
+   "alternatives": [
+    "peripheral-core (Rust, library)",
+    "RECmd/Kroll (USB through the registry, complementary)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://plaso.readthedocs.io/en/latest/sources/user/Parsers-and-plugins.html",
+    "https://docs.rs/peripheral-core"
+   ],
+   "justification": "Only maintained command-line parser found."
+  },
+  "defender": {
+   "label": "Windows Defender logs",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f defender.mplog,defender.mpcmdrun,defender.quarantine,defender.exclusions",
+   "type": "tool",
+   "alternatives": [
+    "Intrinsec MPLog parser",
+    "Velociraptor DefenderDHParser"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html",
+    "https://www.intrinsec.com/?p=223236"
+   ],
+   "justification": "Covers MPLog, MpCmdRun, quarantine and exclusions in a single tool. KNOWN LIMITATION (Dissect 3.25.1): defender.mpcmdrun fails on localized dates (e.g. \"dim. oct. 18 2026\", French Windows). Same information available in the Defender EVTX (Hayabusa / EvtxECmd). To be reported upstream (fox-it/dissect.target); no home-made parser."
+  },
+  "onedrive": {
+   "label": "OneDrive (ODL logs and settings)",
+   "parsers": [
+    "odl"
+   ],
+   "how": "odl.py -o <csv> <logs folder> (ObfuscationStringMap / general.keystore taken into account)",
+   "type": "tool",
+   "alternatives": [
+    "plaso onedrive_log"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/ydkhatri/OneDrive",
+    "https://plaso.readthedocs.io/en/latest/sources/user/Parsers-and-plugins.html"
+   ],
+   "justification": "Reference tool by the author of the research on the ODL format; handles the encryption of recent versions. COLLECTION LIMITATION: without general.keystore (recent OneDrive) or ObfuscationStringMap.txt, strings stay encrypted; check that the KAPE target collects the complete settings\\\\<account> folder."
+  },
+  "dpapi": {
+   "label": "DPAPI master keys",
+   "parsers": [],
+   "how": "",
+   "type": "context",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "Needed to decrypt user secrets; not parsed"
+  },
+  "etw": {
+   "label": "ETW traces / diagnostics (.etl, WDI)",
+   "parsers": [],
+   "how": "",
+   "type": "context",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "SleepStudy, WDI, DeliveryOptimization, WMI autologgers: specialized ETW parsing not planned"
+  },
+  "wer": {
+   "label": "Error reports (WER)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f wer",
+   "type": "tool",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html"
+   ],
+   "justification": ""
+  },
+  "hosts": {
+   "label": "hosts file",
+   "parsers": [
+    "native"
+   ],
+   "how": "\"native\" job of orchestrator.py: active entries of the file -> native/hosts.jsonl",
+   "type": "trivial",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "Plain text."
+  },
+  "desktop_ini": {
+   "label": "desktop.ini",
+   "parsers": [],
+   "how": "",
+   "type": "context",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "No analytical value"
+  },
+  "remote_access": {
+   "label": "Remote access tools (AnyDesk, TeamViewer, Splashtop, RustDesk)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f remoteaccess.logs / remoteaccess.incoming / remoteaccess.filetransfer (dissect/remoteaccess.*.jsonl)",
+   "type": "tool",
+   "alternatives": [
+    "manual reading of the text logs (ad.trace, connection_trace.txt, Connections_incoming.txt)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/plugins/"
+   ],
+   "justification": "Existing Dissect plugins: no home-made parser (POLICY_parsers.md)."
+  },
+  "remote_access_other": {
+   "label": "Other remote access tools / RMM (ScreenConnect, Atera, Kaseya...)",
+   "parsers": [],
+   "how": "no dedicated parser: presence reported by the inventory; activity through EVTX (Application log, ScreenConnect source), $MFT, Prefetch, services",
+   "type": "context",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "Proprietary text logs without a recognized tool: read the raw files; to be re-evaluated according to POLICY_parsers.md."
+  },
+  "thumbcache": {
+   "label": "Thumbcache (thumbnails)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f thumbcache.thumbcache (dissect/thumbcache.thumbcache.jsonl)",
+   "type": "tool",
+   "alternatives": [
+    "Thumbcache Viewer (GUI)",
+    "thumbcache_parser"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/plugins/"
+   ],
+   "justification": "Existing Dissect plugin (POLICY_parsers.md)."
+  },
+  "rdp_files": {
+   "label": "RDP connection files (.rdp, Default.rdp)",
+   "parsers": [
+    "native"
+   ],
+   "how": "\"native\" job: key:type:value settings of each .rdp (UTF-16), passwords excluded -> native/rdp_files.jsonl",
+   "type": "trivial",
+   "alternatives": [
+    "plaso winreg/mstsc_rdp and mstsc_rdp_mru (registry only, not the .rdp files)",
+    "Dissect mru.mstsc (registry only)",
+    "RECmd/Kroll Terminal Server Client (registry)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://plaso.readthedocs.io/en/latest/sources/user/Parsers-and-plugins.html",
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html"
+   ],
+   "justification": "No recognized parser of the .rdp files themselves (\"key:type:value\" text); trivial reading. The \"password 51:b\" field (DPAPI-encrypted) is never extracted. Complements mru.mstsc / Terminal Server Client."
+  },
+  "notepad_tabs": {
+   "label": "Windows 11 Notepad tabs (TabState)",
+   "parsers": [
+    "dissect"
+   ],
+   "how": "target-query -f windowsnotepad.tabs (dissect/windowsnotepad.tabs.jsonl)",
+   "type": "tool",
+   "alternatives": [
+    "ogmini/Notepad-State-Library",
+    "Nordgaren/tabstate-util",
+    "JustArion/Notepad-Tabs"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html",
+    "https://github.com/fox-it/dissect.target/pull/540",
+    "https://github.com/ogmini/Notepad-State-Library"
+   ],
+   "justification": "Dissect plugin already installed (checked in plugins.txt and the source code): content of saved and unsaved tabs, deleted content when available. Timestamp only for saved tabs."
+  },
+  "panther": {
+   "label": "Windows setup logs (Panther)",
+   "parsers": [
+    "native"
+   ],
+   "how": "\"native\" job: one timestamped line = one record (local date, level, component, message) -> native/panther.jsonl",
+   "type": "trivial",
+   "alternatives": [
+    "manual reading",
+    "plaso (no setupact.log parser)",
+    "Dissect (no plugin)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://plaso.readthedocs.io/en/latest/sources/user/Parsers-and-plugins.html",
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html"
+   ],
+   "justification": "No recognized parser of setupact.log / setuperr.log in plaso, Dissect or EZTools. Line-by-line text format: trivial reading. Times in the machine's local time (converted to UTC during normalization)."
+  },
+  "panther_other": {
+   "label": "Panther (other files)",
+   "parsers": [],
+   "how": "",
+   "type": "context",
+   "alternatives": [],
+   "checked_at": "2026-10-18",
+   "sources": [],
+   "justification": "unattend.xml may contain setup passwords (in clear text or base64): not parsed, like the other secrets (DPAPI, LSA). Presence reported by the inventory; file available in the collection."
+  },
+  "wifi_profiles": {
+   "label": "Wi-Fi profiles (Wlansvc)",
+   "parsers": [
+    "native"
+   ],
+   "how": "\"native\" job: WLANProfile v1 XML (name, SSID, connection type/mode, authentication, encryption) + CopyLog timestamps -> native/wifi_profiles.jsonl",
+   "type": "trivial",
+   "alternatives": [
+    "RECmd/Kroll KnownNetworks and Dissect network_history (NetworkList registry: first/last connection)",
+    "netsh wlan show profiles (live system only)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://docs.dissect.tools/en/latest/advanced/plugins.html",
+    "https://learn.microsoft.com/windows/win32/nativewifi/wlan-profileschema-elements"
+   ],
+   "justification": "No Dissect plugin nor plaso parser for the Wlansvc XML files; XML documented by Microsoft, read with the standard library. keyMaterial / sharedKey (DPAPI-encrypted key) never extracted. Connection dates remain in KnownNetworks / network_history."
+  },
+  "onedrive_db": {
+   "label": "OneDrive (SyncEngineDatabase.db)",
+   "parsers": [],
+   "how": "no parser installed: the database is copied by the sqlecmd job, but SQLECmd has no map for it",
+   "type": "proposed",
+   "alternatives": [
+    "OneDriveExplorer (Beercow, MIT license, CLI: OneDriveExplorer.exe -s, CSV / JSON / HTML output)",
+    "SQLECmd map to create (no OneDrive map in SQLECmd/SQLMap/Maps as of 2026-10-18)",
+    "odl.py (ODL logs, already installed)"
+   ],
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/Beercow/OneDriveExplorer",
+    "https://github.com/EricZimmerman/SQLECmd/tree/master/SQLMap/Maps",
+    "https://github.com/ydkhatri/OneDrive"
+   ],
+   "justification": "TEMPORARILY RULED OUT, pending validation: OneDriveExplorer is the reference tool (reads SyncEngineDatabase.db with -s) but is not installed; POLICY_parsers.md forbids installing it without the analyst's validation (addition to 02_Install-Tools.ps1 with a lock entry). No home-made parser since a tool exists. Meanwhile: ODL logs (odl.py), $MFT / $J of the OneDrive folder, raw database in the collection. The inventory reports the database (NOT COVERED, gaps.json)."
+  }
+ },
+ "registry_keys": {
+  "_doc": "Registry keys added or checked outside the file catalog (the hives are in \"artifacts\"). Batch: pipeline\\config\\recmd\\Sleuthline_Complement.reb (job recmd_complement).",
+  "emdmgmt": {
+   "key": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\EMDMgmt",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "Sleuthline_Complement.reb (recursive)",
+   "type": "tool",
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RECmd/tree/master/BatchExamples"
+   ],
+   "justification": "Missing from Kroll_Batch.reb 1.22 and from the example batches; volume serial number (decimal) in the subkey name. Missing on systems without ReadyBoost (SSD), like test01."
+  },
+  "active_setup": {
+   "key": "SOFTWARE[\\WOW6432Node]\\Microsoft\\Active Setup\\Installed Components\\*\\StubPath ; NTUSER ...\\Version",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "Sleuthline_Complement.reb",
+   "type": "tool",
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RECmd/tree/master/BatchExamples"
+   ],
+   "justification": "Missing from Kroll; definition taken from SoftwareASEPs.reb (the full batch would add noise)."
+  },
+  "print_monitors": {
+   "key": "SYSTEM\\ControlSet*\\Control\\Print\\Monitors\\*\\Driver ; Print\\Environments\\*\\Print Processors\\*\\Driver",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "Sleuthline_Complement.reb",
+   "type": "tool",
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RECmd/tree/master/BatchExamples"
+   ],
+   "justification": "Missing from Kroll; definition taken from SystemASEPs.reb."
+  },
+  "bootexecute": {
+   "key": "SYSTEM\\ControlSet*\\Control\\Session Manager : BootExecute, SetupExecute, Execute",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "Sleuthline_Complement.reb",
+   "type": "tool",
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RECmd/tree/master/BatchExamples"
+   ],
+   "justification": "Missing from Kroll; definition taken from SystemASEPs.reb."
+  },
+  "pca_store": {
+   "key": "NTUSER\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Compatibility Assistant\\Store (et Persisted)",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "Sleuthline_Complement.reb",
+   "type": "tool",
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RECmd/tree/master/BatchExamples"
+   ],
+   "justification": "Missing from Kroll; definition taken from AllRegExecutablesFoundOrRun.reb. The Windows 11 PCA files (appcompat\\pca) are still handled by plaso (pca artifact)."
+  },
+  "usb_properties": {
+   "key": "SYSTEM\\ControlSet*\\Enum\\USB|USBSTOR|SCSI\\...\\Properties\\{83da6326-97a6-4088-9453-a1923f573b29}\\0064 / 0066 / 0067",
+   "parsers": [
+    "RECmd"
+   ],
+   "how": "already covered: RECmd USB, USBSTOR and SCSI plugins called by Kroll_Batch.reb (FirstInstalled, LastConnected, LastRemoved columns)",
+   "type": "tool",
+   "checked_at": "2026-10-18",
+   "sources": [
+    "https://github.com/EricZimmerman/RegistryPlugins/tree/master/RegistryPlugin.USBSTOR",
+    "https://github.com/EricZimmerman/RegistryPlugins/tree/master/RegistryPlugin.USB"
+   ],
+   "justification": "No additional entry: the plugins already decode these properties (checked on test01: recmd_kroll_C_USB.csv and _SCSI.csv). Normalization mapping added for USBSTOR (reg_usbstor)."
+  }
+ }
+}

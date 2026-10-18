@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.reb text eol=crlf
+*.docx binary

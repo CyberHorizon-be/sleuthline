@@ -1,0 +1,67 @@
+{
+ "_doc": "Configuration of the model used by analyze.py. Choose the profile with 'active' or the --profile option. API keys go in config\\api_keys.txt, on the line named by api_key_env (never in this file). report_language: language of the findings, answers and summaries written by the model (en, fr, de, nl, es...).",
+ "active": "claude",
+ "report_language": "en",
+ "profiles": {
+  "claude": {
+   "provider": "anthropic",
+   "model": "claude-opus-5-5",
+   "api_key_env": "ANTHROPIC_API_KEY",
+   "max_tokens": 16000,
+   "temperature": 0.1,
+   "tool_mode": "native"
+  },
+  "claude-sonnet": {
+   "provider": "anthropic",
+   "model": "claude-sonnet-5-5",
+   "api_key_env": "ANTHROPIC_API_KEY",
+   "max_tokens": 16000,
+   "temperature": 0.1,
+   "tool_mode": "native"
+  },
+  "openai": {
+   "provider": "openai",
+   "base_url": "https://api.openai.com/v1",
+   "model": "gpt-5",
+   "api_key_env": "OPENAI_API_KEY",
+   "max_tokens": 16000,
+   "max_tokens_param": "max_completion_tokens",
+   "temperature": null,
+   "tool_mode": "native"
+  },
+  "ollama": {
+   "_doc": "Local model: no data leaves the machine. The model must support tool calling; otherwise tool_mode = json.",
+   "provider": "openai",
+   "base_url": "http://localhost:11434/v1",
+   "model": "qwen3:32b",
+   "max_tokens": 8192,
+   "temperature": 0.1,
+   "tool_mode": "native",
+   "timeout_s": 1800
+  },
+  "lmstudio": {
+   "provider": "openai",
+   "base_url": "http://localhost:1234/v1",
+   "model": "local-model",
+   "max_tokens": 8192,
+   "temperature": 0.1,
+   "tool_mode": "json",
+   "timeout_s": 1800
+  },
+  "mock": {
+   "_doc": "Tests without a model: replays a script of answers.",
+   "provider": "mock",
+   "model": "mock",
+   "script": ""
+  }
+ },
+ "limits": {
+  "max_tool_calls_per_step": 40,
+  "max_result_chars": 15000,
+  "max_rows": 200,
+  "keep_full_results": 12,
+  "query_timeout_s": 120,
+  "_doc_budget": "max_billed_tokens_per_run: cap per run of analyze.py, in full-price input-equivalent tokens (cache read = 10 %, output = 5x). 0 = no limit. When reached, the state is saved: run again to continue.",
+  "max_billed_tokens_per_run": 0
+ }
+}
