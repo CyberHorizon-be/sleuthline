@@ -8,6 +8,7 @@ following PLAYBOOK.md, records evidence-backed findings, then produces a Word re
   python analyze.py <case> --ask "Where does setup.exe come from?"   one-off question
   python analyze.py <case> --report-only                          regenerate the report
   python analyze.py <case> --profile ollama                       another model (config\\llm_config.json)
+  python analyze.py --check-model [--profile claude]              tests the API key and the model (2 tiny calls)
 
 Case files (<case>\\analysis\\):
   guidance.txt          context, questions, IOCs, instructions (created from a template if missing)
@@ -794,6 +795,8 @@ Instructions: explore the database with the tools, pivot, corroborate. Record ea
 
     # -- step loop -------------------------------------------------------------------------
     def compact_messages(self, messages: list[dict]) -> list[dict]:
+        if getattr(getattr(self, "provider", None), "append_only", False):
+            return messages     # Claude: history must stay unmodified (thinking blocks are signed over it)
         keep = self.limits["keep_full_results"]
         tool_idx = [i for i, m in enumerate(messages) if m["role"] == "tool"]
         # Truncation in batches of 8: the beginning of the conversation only changes once every 8 results,
@@ -838,7 +841,7 @@ Instructions: explore the database with the tools, pivot, corroborate. Record ea
                 self.state.save()
                 raise LLMError(f"run budget reached ({num(self.run_billed)} input-equivalent tokens > "
                                f"limits.max_billed_tokens_per_run = {num(budget)}): run again to continue, or raise the limit")
-            messages.append({"role": "assistant", "content": rep.text, "tool_calls": rep.tool_calls})
+            messages.append({"role": "assistant", "content": rep.text, "tool_calls": rep.tool_calls, "raw": rep.raw})
             if not rep.tool_calls:
                 nudges += 1
                 if nudges > 3:
@@ -936,7 +939,53 @@ def export_csv(case: Path, out: Path, state: State, db: CaseDB, guidance: dict, 
 # ------------------------------------------------------------------------------------------
 # Main program
 # ------------------------------------------------------------------------------------------
+PING_TOOL = [{"name": "ping", "description": "Connectivity test: returns pong.",
+              "parameters": {"type": "object", "properties": {"word": {"type": "string"}}, "required": ["word"]}}]
+
+
+def check_model(config: Path, profile: str | None) -> int:
+    """Tests the model profile with two tiny calls (a tool call, then its result): API key, model name,
+    parameters accepted by the API, tool calling and round trip of the assistant turn. Costs a few
+    thousand tokens at most."""
+    name, pcfg, _ = load_config(config, profile)
+    provider = make_provider(pcfg)
+    print(f"Profile: {name} -> {provider.describe()}")
+    if pcfg.get("api_key_env") and not provider.api_key():
+        print(f"FAILED: {provider.missing_key_message()} (file read: {KEYS_FILE})")
+        return 2
+    system = "You are a connectivity test. Follow the user's instruction exactly."
+    msgs = [{"role": "user", "content": "Call the ping tool with word = sleuthline. After its result, answer with the single word OK."}]
+    t0 = time.time()
+    try:
+        r1 = provider.chat(system, msgs, PING_TOOL)
+        calls = [c for c in r1.tool_calls if c["name"] == "ping"]
+        if not calls:
+            print(f"FAILED: the model did not call the tool (answer: {r1.text[:200]!r}). "
+                  "For a model without tool calling, set \"tool_mode\": \"json\" in its profile.")
+            return 1
+        msgs.append({"role": "assistant", "content": r1.text, "tool_calls": r1.tool_calls, "raw": r1.raw})
+        for c in r1.tool_calls:
+            msgs.append({"role": "tool", "tool_call_id": c["id"], "name": c["name"], "content": "pong"})
+        r2 = provider.chat(system, msgs, PING_TOOL)
+    except LLMError as e:
+        print(f"FAILED: {e}")
+        return 1
+    tokens_in, tokens_out = r1.input_tokens + r2.input_tokens, r1.output_tokens + r2.output_tokens
+    print(f"OK: tool call and tool result accepted ({time.time() - t0:.1f} s, {num(tokens_in)} input / "
+          f"{num(tokens_out)} output tokens). Final answer: {r2.text[:80]!r}")
+    return 0
+
+
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--check-model" in argv:
+        cp = argparse.ArgumentParser(description="Tests the model profile (API key, parameters, tool calling).")
+        cp.add_argument("--check-model", action="store_true")
+        cp.add_argument("--profile")
+        cp.add_argument("--config", type=Path, default=CONFIG)
+        a = cp.parse_args(argv)
+        return check_model(a.config, a.profile)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("case", type=Path)
     ap.add_argument("--profile", help="profile of llm_config.json (default: 'active')")

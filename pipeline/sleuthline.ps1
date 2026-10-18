@@ -13,10 +13,14 @@
       ask         one-off question to the agent: sleuthline.ps1 ask <case> "text"
       report      regenerate the Word report without calling the model
       all         1 -> 2 -> 3 -> 4 in a row (stops at the first error)
+      check       tests the model: API key, model name and tool calling, with 2 tiny calls
+                  (sleuthline.ps1 check [profile]; no case needed)
 
     Extra options are passed to the script of the step
     (e.g. sleuthline.ps1 parse <case> --only srumecmd --force).
 
+.EXAMPLE
+    C:\Sleuthline\pipeline\sleuthline.ps1 check
 .EXAMPLE
     C:\Sleuthline\pipeline\sleuthline.ps1 all C:\Sleuthline\cases\test01
 .EXAMPLE
@@ -49,17 +53,29 @@ function Invoke-Step([string]$Name, [string[]]$Extra) {
     if ($LASTEXITCODE -ne 0) { throw "$Name ended with code $LASTEXITCODE" }
 }
 
+function Get-Python {
+    $p = $null
+    $cfgPath = Join-Path $root 'sleuthline-config.json'
+    if (Test-Path $cfgPath) { $p = (Get-Content $cfgPath -Raw | ConvertFrom-Json).orchestrator_py }
+    if (-not $p -or -not (Test-Path $p)) { $p = Join-Path $root 'venvs\orchestrator\Scripts\python.exe' }
+    if (-not (Test-Path $p)) { throw "Orchestrator Python not found: $p (run Install-All.ps1)" }
+    return $p
+}
+
 $cmd = $Command.ToLowerInvariant()
+if ($cmd -eq 'check') {
+    # No case: the second argument, if any, is the profile to test
+    $py = Get-Python
+    $extra = @('--check-model') + $(if ($Case) { @('--profile', $Case) } else { @() })
+    & $py (Join-Path $pipe $scripts['analyze']) @extra
+    exit $LASTEXITCODE
+}
 if ($cmd -in 'help', '-h', '--help' -or (-not $Case)) {
     Get-Help $PSCommandPath -Detailed | Out-String -Width 120 | Write-Host
     return
 }
 if (-not (Test-Path $Case)) { throw "Case folder not found: $Case" }
-$py = $null
-$cfgPath = Join-Path $root 'sleuthline-config.json'
-if (Test-Path $cfgPath) { $py = (Get-Content $cfgPath -Raw | ConvertFrom-Json).orchestrator_py }
-if (-not $py -or -not (Test-Path $py)) { $py = Join-Path $root 'venvs\orchestrator\Scripts\python.exe' }
-if (-not (Test-Path $py)) { throw "Orchestrator Python not found: $py (run Install-All.ps1)" }
+$py = Get-Python
 
 
 switch ($cmd) {

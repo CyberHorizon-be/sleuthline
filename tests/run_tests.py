@@ -549,6 +549,189 @@ class TestGuards(unittest.TestCase):
 
 
 # ------------------------------------------------------------------------------------------
+# Claude API simulated over HTTP: the rules of the Claude 5.5 Messages API are checked
+# on every request (the real provider code and HTTP layer are used, only the server is fake)
+# ------------------------------------------------------------------------------------------
+class FakeClaudeAPI:
+    """Local HTTP server that answers like the Messages API and REJECTS (HTTP 400) what Claude 5.5
+    models reject: sampling parameters, disabled thinking, forced tool_choice, ending on an assistant
+    turn, assistant turns not echoed exactly as returned (thinking blocks dropped or edited), edited
+    history, tool_use without its tool_result, more than 4 cache breakpoints."""
+    KEY = "sk-test-sleuthline"
+
+    def __init__(self, script):
+        import http.server
+        import threading
+        self.script, self.i, self.errors, self.requests = list(script), 0, [], []
+        self.sent = {}            # id of the tool_use of an answer -> exact content returned
+        self.prev = None          # messages of the previous request of the same conversation
+        api = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+                errs = api.check(self.headers, body)
+                if errs:
+                    api.errors += errs
+                    out, code = {"type": "error", "error": {"type": "invalid_request_error", "message": "; ".join(errs)}}, 400
+                else:
+                    out, code = api.answer(body), 200
+                data = json.dumps(out).encode()
+                self.send_response(code)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    @staticmethod
+    def strip_cache(msgs):
+        return [{**m, "content": [{k: v for k, v in b.items() if k != "cache_control"} for b in m["content"]]
+                 if isinstance(m["content"], list) else m["content"]} for m in msgs]
+
+    def check(self, headers, body):
+        errs = []
+        if headers.get("x-api-key") != self.KEY:
+            errs.append("invalid x-api-key")
+        if not headers.get("anthropic-version"):
+            errs.append("anthropic-version header required")
+        for k in ("temperature", "top_p", "top_k"):
+            if k in body:
+                errs.append(f"{k}: sampling parameters are not supported for this model")
+        if (body.get("thinking") or {}).get("type") in ("disabled", "enabled"):
+            errs.append("thinking.type not supported for this model")
+        if (body.get("tool_choice") or {}).get("type") in ("any", "tool"):
+            errs.append("tool_choice any/tool not supported for this model")
+        msgs = body.get("messages", [])
+        if not msgs or msgs[0]["role"] != "user" or msgs[-1]["role"] != "user":
+            errs.append("messages must start and end with a user turn")
+        if any(a["role"] == b["role"] for a, b in zip(msgs, msgs[1:])):
+            errs.append("roles must alternate")
+        marks = sum(1 for b in body.get("system", []) if "cache_control" in b) + sum(
+            1 for m in msgs if isinstance(m["content"], list) for b in m["content"] if "cache_control" in b)
+        if marks > 4:
+            errs.append("more than 4 cache_control blocks")
+        clean = self.strip_cache(msgs)
+        for i, m in enumerate(clean):
+            if m["role"] != "assistant":
+                continue
+            uses = [b for b in m["content"] if b.get("type") == "tool_use"]
+            expected = self.sent.get(uses[0]["id"]) if uses else None
+            if expected is not None and m["content"] != expected:
+                errs.append(f"assistant turn {i} modified (thinking blocks must be passed back unmodified)")
+            nxt = clean[i + 1]["content"] if i + 1 < len(clean) else []
+            results = [b.get("tool_use_id") for b in nxt if isinstance(b, dict) and b.get("type") == "tool_result"]
+            if [u["id"] for u in uses] != results[:len(uses)]:
+                errs.append(f"tool_use of turn {i} without its tool_result first in the next turn")
+        if self.prev is not None and len(clean) > len(self.prev) and clean[:len(self.prev)] != self.prev:
+            errs.append("earlier history was edited (conversation must be append-only)")
+        self.prev = clean
+        return errs
+
+    def answer(self, body):
+        self.requests.append(body)
+        item = self.script[self.i] if self.i < len(self.script) else \
+            {"tool": "step_complete", "args": {"summary": "simulated"}}
+        self.i += 1
+        n = self.i
+        content = [{"type": "thinking", "thinking": "", "signature": f"sig-{n}"}]
+        if item.get("text"):
+            content.append({"type": "text", "text": item["text"]})
+        if item.get("tool"):
+            content.append({"type": "tool_use", "id": f"toolu_{n:03d}", "name": item["tool"], "input": item.get("args", {})})
+            self.sent[f"toolu_{n:03d}"] = json.loads(json.dumps(content))
+        return {"type": "message", "role": "assistant", "content": content,
+                "stop_reason": "tool_use" if item.get("tool") else "end_turn",
+                "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 0,
+                          "cache_creation_input_tokens": 0}}
+
+
+class TestClaudeAPI(unittest.TestCase):
+    def config(self, d, url):
+        cfg = json.loads((PIPE / "config" / "llm_config.json").read_text(encoding="utf-8"))
+        cfg["active"] = "claude"
+        cfg["profiles"]["claude"].update(base_url=url, api_key_env="SLEUTHLINE_TEST_KEY")
+        path = Path(d) / "cfg.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def setUp(self):
+        os.environ["SLEUTHLINE_TEST_KEY"] = FakeClaudeAPI.KEY
+
+    def test_shipped_claude_profiles_are_accepted(self):
+        cfg = json.loads((PIPE / "config" / "llm_config.json").read_text(encoding="utf-8"))
+        for name, prof in cfg["profiles"].items():
+            if prof.get("provider") == "anthropic":
+                self.assertIsNone(prof.get("temperature"), name)     # rejected by Claude 5.5 models
+
+    def test_check_model(self):
+        api = FakeClaudeAPI([{"tool": "ping", "args": {"word": "sleuthline"}}, {"text": "OK"}])
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                self.assertEqual(analyze.main(["--check-model", "--config", str(self.config(d, api.url))]), 0)
+        finally:
+            api.close()
+        self.assertEqual(api.errors, [])
+        self.assertEqual(len(api.requests), 2)
+
+    def test_check_model_reports_rejection(self):
+        api = FakeClaudeAPI([{"tool": "ping", "args": {"word": "x"}}, {"text": "OK"}])
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                cfgp = self.config(d, api.url)
+                cfg = json.loads(cfgp.read_text())
+                cfg["profiles"]["claude"]["temperature"] = 0.1
+                cfgp.write_text(json.dumps(cfg))
+                self.assertEqual(analyze.main(["--check-model", "--config", str(cfgp)]), 1)
+        finally:
+            api.close()
+        self.assertTrue(any("temperature" in e for e in api.errors))
+
+    def test_full_analysis_over_http(self):
+        script = [
+            {"tool": "sql_query", "args": {"sql": "SELECT ref, description FROM timeline LIMIT 50"}},
+            {"text": "Two sources.", "tool": "add_finding",
+             "args": {"title": "Execution of EVIL.EXE", "severity": "critical", "confidence": "confirmed",
+                      "description": "Prefetch and 4688", "refs": ["prefetch/p.csv#1", "evtx/e.csv#1"]}},
+            {"tool": "timeline_window", "args": {"start": "2023-11-10 11:00:00", "end": "2023-11-10 12:00:00"}},
+            {"text": "No tool this time."},                                   # nudged by the agent: user text appended
+            {"tool": "step_complete", "args": {"summary": "step 1 done"}},
+            {"tool": "step_complete", "args": {"summary": "step 2 done"}},
+        ]
+        api = FakeClaudeAPI(script)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                case = Path(d) / "case"
+                build_synthetic_case(case)
+                pb = Path(d) / "PLAYBOOK.md"
+                pb.write_text("# P\n\n## Rules\n\n1. Facts.\n\n## Step 1: Execution\n\nLook.\n\n## Step 2: Summary\n\nSum.\n",
+                              encoding="utf-8")
+                argv = [str(case), "--config", str(self.config(d, api.url)), "--playbook", str(pb)]
+                self.assertEqual(analyze.main(argv), 0)
+                st = json.loads((case / "analysis" / "findings.json").read_text(encoding="utf-8"))
+        finally:
+            api.close()
+        self.assertEqual(api.errors, [])
+        self.assertEqual(st["findings"][0]["confidence"], "confirmed")
+        self.assertEqual(st["steps"]["2"]["status"], analyze.DONE)
+        # the thinking blocks of every earlier answer were sent back (signatures sig-1..)
+        last = api.requests[4]["messages"]
+        sigs = [b["signature"] for m in last if m["role"] == "assistant" for b in m["content"] if b["type"] == "thinking"]
+        self.assertEqual(sigs, ["sig-1", "sig-2", "sig-3", "sig-4"])
+        self.assertEqual(api.requests[0]["output_config"], {"effort": "medium"})
+
+
+# ------------------------------------------------------------------------------------------
 # Regression on a real case
 # ------------------------------------------------------------------------------------------
 def snapshot(db: Path) -> dict:

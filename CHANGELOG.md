@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fix: Claude API with Claude 5.5 models.** The analysis had only been run through the mock provider and could not work against the real API:
+  - the Claude profiles sent `temperature: 0.1`, which Claude 5.5 models reject (HTTP 400). It is now `null`;
+  - the thinking blocks of the model's answers were dropped when the conversation was sent back (HTTP 400). Assistant turns are now echoed exactly as received;
+  - old tool results were truncated, which edits the history (HTTP 400 on recent accounts). The conversation is now append-only with Claude.
+- New `effort` setting in the Claude profiles (default `medium`).
+- New `sleuthline.ps1 check [profile]` command: tests the API key, the model and tool calling with two tiny calls.
+- Tests: a local fake of the Messages API that rejects what Claude 5.5 rejects. It runs `check` and a full analysis over HTTP through the real provider code.
 - Removed the compatibility with the pre-release French version (`dfir.ps1`, `-DfirRoot`, `dfir-config.json`, French command, guidance and playbook names, French values in `findings.json`).
 - Regression references (`tests/golden/`) are local to each machine and no longer published.
 
