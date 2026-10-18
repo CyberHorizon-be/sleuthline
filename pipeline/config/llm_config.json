@@ -1,5 +1,5 @@
 {
- "_doc": "Configuration of the model used by analyze.py. Choose the profile with 'active' or the --profile option. API keys go in config\\api_keys.txt, on the line named by api_key_env (never in this file). report_language: language of the findings, answers and summaries written by the model (en, fr, de, nl, es...).",
+ "_doc": "Configuration of the model used by analyze.py. Choose the profile with 'active' or the --profile option. API keys go in config\\api_keys.txt, on the line named by api_key_env (never in this file). report_language: language of the findings, answers and summaries written by the model (en, fr, de, nl, es...). Claude profiles: temperature must stay null (Claude 5.5 models reject sampling parameters); effort (low, medium, high, xhigh, max) sets the depth of the adaptive thinking, billed as output tokens. Test a profile with: sleuthline.ps1 check [profile].",
  "active": "claude",
  "report_language": "en",
  "profiles": {
@@ -8,16 +8,16 @@
    "model": "claude-opus-5-5",
    "api_key_env": "ANTHROPIC_API_KEY",
    "max_tokens": 16000,
-   "temperature": 0.1,
-   "tool_mode": "native"
+   "temperature": null,
+   "effort": "medium"
   },
   "claude-sonnet": {
    "provider": "anthropic",
    "model": "claude-sonnet-5-5",
    "api_key_env": "ANTHROPIC_API_KEY",
    "max_tokens": 16000,
-   "temperature": 0.1,
-   "tool_mode": "native"
+   "temperature": null,
+   "effort": "medium"
   },
   "openai": {
    "provider": "openai",
@@ -58,7 +58,10 @@
  "evidence_policy": {
   "_doc": "Enforced by the program (guards.py), whatever confidence the model declares. A finding of a severity listed in corroboration_severities stays 'confirmed' only with min_independent_sources independent sources (same .evtx file or same artifact type = same source); otherwise it is recorded as 'probable'. Evidence from outputs mapped automatically (mapping = 'auto') cannot confirm on its own unless auto_mapping_can_confirm is true. An analyst can override a finding in findings.json: \"analyst_override\": {\"confidence\": \"confirmed\", \"by\": \"name\", \"reason\": \"...\"}, then regenerate the report.",
   "min_independent_sources": 2,
-  "corroboration_severities": ["critical", "high"],
+  "corroboration_severities": [
+   "critical",
+   "high"
+  ],
   "auto_mapping_can_confirm": false
  },
  "limits": {

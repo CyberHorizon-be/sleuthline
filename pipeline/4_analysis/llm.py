@@ -4,7 +4,9 @@ Sleuthline - provider-independent access layer to language models (standard libr
 only: no SDK dependency).
 
 Providers ("provider" key of llm_config.json):
-  anthropic   Claude Messages API (native tools, prompt caching).
+  anthropic   Claude Messages API (native tools, prompt caching, adaptive thinking). The assistant
+              turns are sent back exactly as received (thinking blocks included) and the
+              conversation is append-only: Claude 5.5 models reject edited history (HTTP 400).
   openai      Any OpenAI-compatible /v1/chat/completions API: OpenAI, Azure OpenAI,
               Mistral, Groq, OpenRouter, and locally Ollama, LM Studio, vLLM, llama.cpp...
               (base_url parameter).
@@ -22,6 +24,7 @@ Internal (neutral) messages:
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -42,6 +45,7 @@ class Reply:
     stop_reason: str = ""
     cache_read_tokens: int = 0      # share read from the cache (billed ~10 %)
     cache_write_tokens: int = 0     # share written to the cache (billed ~125 %)
+    raw: list | None = None         # assistant content blocks as received (Anthropic: echoed back unmodified)
 
     def billed_input(self) -> float:
         """Input tokens as full-price equivalent (used for the budget)."""
@@ -150,6 +154,8 @@ def neutral_to_json_mode(messages: list[dict]) -> list[dict]:
 # Providers
 # ------------------------------------------------------------------------------------------
 class Provider:
+    append_only = False             # True: earlier messages must never be edited (no truncation of old results)
+
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.model = cfg.get("model", "")
@@ -183,18 +189,24 @@ class Provider:
 
 
 class AnthropicProvider(Provider):
+    """Claude Messages API. Claude 5.5 models: sampling parameters (temperature, top_p, top_k) other
+    than the defaults are rejected, adaptive thinking is always on, and the thinking blocks of each
+    answer must be sent back complete and unmodified in tool loops, in an append-only conversation.
+    Tools are always native (Claude has tool calling): tool_mode "json" is ignored."""
+    append_only = True
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.tool_mode = "native"
+
     def chat(self, system, messages, tools):
         key = self.api_key()
         if not key:
             raise LLMError(self.missing_key_message())
         url = self.cfg.get("base_url", "https://api.anthropic.com").rstrip("/") + "/v1/messages"
         headers = {"x-api-key": key, "anthropic-version": self.cfg.get("api_version", "2023-06-01")}
-        if self.tool_mode == "json":
-            payload_msgs = neutral_to_json_mode(messages)
-            sys_text = system + json_mode_instructions(tools)
-        else:
-            payload_msgs = self._convert(messages)
-            sys_text = system
+        payload_msgs = self._convert(messages)
+        sys_text = system
         # Second cache breakpoint on the last message: the conversation of a step (queries and results
         # already sent) is read back from the cache on the next turn instead of being billed again in full.
         if payload_msgs:
@@ -205,13 +217,19 @@ class AnthropicProvider(Provider):
                 last["content"][-1] = {**last["content"][-1], "cache_control": {"type": "ephemeral"}}
         payload = {"model": self.model, "max_tokens": self.max_tokens, "messages": payload_msgs,
                    "system": [{"type": "text", "text": sys_text, "cache_control": {"type": "ephemeral"}}]}
-        if self.temperature is not None:
+        if self.temperature is not None:        # null in the Claude profiles: rejected by Claude 5.5 models
             payload["temperature"] = self.temperature
-        if self.tool_mode != "json" and tools:
+        if self.cfg.get("effort"):
+            payload["output_config"] = {"effort": self.cfg["effort"]}
+        if self.cfg.get("thinking"):
+            payload["thinking"] = self.cfg["thinking"]
+        if tools:
             payload["tools"] = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
                                 for t in tools]
         r = _http_json(url, payload, headers, self.timeout)
-        rep = Reply(stop_reason=r.get("stop_reason", ""))
+        if r.get("type") == "error":
+            raise LLMError(f"API error: {json.dumps(r.get('error'))[:500]}")
+        rep = Reply(stop_reason=r.get("stop_reason", ""), raw=copy.deepcopy(r.get("content") or []))
         u = r.get("usage", {})
         rep.cache_read_tokens = u.get("cache_read_input_tokens", 0) or 0
         rep.cache_write_tokens = u.get("cache_creation_input_tokens", 0) or 0
@@ -224,19 +242,30 @@ class AnthropicProvider(Provider):
             elif b.get("type") == "tool_use":
                 rep.tool_calls.append({"id": b["id"], "name": b["name"], "args": b.get("input") or {}})
         rep.text = "\n".join(texts).strip()
-        if self.tool_mode == "json" and not rep.tool_calls:
-            tc = parse_json_tool_call(rep.text)
-            if tc:
-                rep.tool_calls = [tc]
+        if rep.stop_reason == "refusal":
+            raise LLMError("the model refused to continue (stop_reason = refusal): see transcript.jsonl")
         return rep
 
     @staticmethod
     def _convert(messages):
+        """Neutral messages -> Messages API. Assistant turns are echoed exactly as received (raw blocks:
+        thinking, text, tool_use); consecutive user content (tool results, then a reminder) is merged
+        into one user turn, tool results first."""
         out = []
+
+        def add_user(blocks):
+            if out and out[-1]["role"] == "user":
+                out[-1]["content"].extend(blocks)
+            else:
+                out.append({"role": "user", "content": blocks})
+
         for m in messages:
             if m["role"] == "user":
-                out.append({"role": "user", "content": [{"type": "text", "text": m["content"]}]})
+                add_user([{"type": "text", "text": m["content"] or "(empty)"}])
             elif m["role"] == "assistant":
+                if m.get("raw"):
+                    out.append({"role": "assistant", "content": copy.deepcopy(m["raw"])})
+                    continue
                 blocks = []
                 if m.get("content"):
                     blocks.append({"type": "text", "text": m["content"]})
@@ -244,11 +273,7 @@ class AnthropicProvider(Provider):
                     blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["args"]})
                 out.append({"role": "assistant", "content": blocks or [{"type": "text", "text": "(empty)"}]})
             elif m["role"] == "tool":
-                block = {"type": "tool_result", "tool_use_id": m["tool_call_id"], "content": m["content"]}
-                if out and out[-1]["role"] == "user" and all(b.get("type") == "tool_result" for b in out[-1]["content"]):
-                    out[-1]["content"].append(block)
-                else:
-                    out.append({"role": "user", "content": [block]})
+                add_user([{"type": "tool_result", "tool_use_id": m["tool_call_id"], "content": m["content"] or "(empty)"}])
         return out
 
 

@@ -42,6 +42,7 @@ Then, for a KAPE collection copied to `C:\Sleuthline\cases\<case>\`:
 ```powershell
 # API key of your model: line ANTHROPIC_API_KEY = ... in C:\Sleuthline-setup\pipeline\config\api_keys.txt
 .\install\02_Install-Tools.ps1 -Only Pipeline                # redeploys the pipeline (and the key)
+C:\Sleuthline\pipeline\sleuthline.ps1 check                 # tests the key and the model (2 tiny calls)
 C:\Sleuthline\pipeline\sleuthline.ps1 all C:\Sleuthline\cases\<case>
 ```
 
@@ -248,9 +249,11 @@ An interrupted analysis (network error, Ctrl+C) resumes where it stopped: run th
 
 **Models.** Configuration in `pipeline\config\llm_config.json` (active profile: `active`, or `--profile`):
 
-- `anthropic`: Claude (default `claude-opus-5-5`, prompt caching);
+- `anthropic`: Claude (default `claude-opus-5-5`, prompt caching, adaptive thinking). Keep `temperature` at `null`: Claude 5.5 models reject sampling parameters. `effort` (`low` to `max`, default `medium`) sets how much the model thinks; thinking is billed as output tokens. The conversation of a step is sent append-only, with the model's turns echoed unmodified, as these models require;
 - `openai`: any OpenAI-compatible API (OpenAI, Azure, Mistral, OpenRouter) and local servers (Ollama, LM Studio, vLLM), where no data leaves the VM;
 - `mock`: tests without a model.
+
+**Test a profile before a real case**: `sleuthline.ps1 check` (or `sleuthline.ps1 check claude-sonnet`) makes two tiny calls: a tool call, then its result. It checks the API key, the model name, the parameters and tool calling, and prints the error returned by the API if something is wrong.
 
 `report_language` (default `en`; e.g. `fr`, `de`, `nl`) sets the language in which the model writes findings, answers and summaries; the report layout itself is in English. For a model without tool calling, use `"tool_mode": "json"`.
 
