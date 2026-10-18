@@ -55,6 +55,12 @@
    "script": ""
   }
  },
+ "evidence_policy": {
+  "_doc": "Enforced by the program (guards.py), whatever confidence the model declares. A finding of a severity listed in corroboration_severities stays 'confirmed' only with min_independent_sources independent sources (same .evtx file or same artifact type = same source); otherwise it is recorded as 'probable'. Evidence from outputs mapped automatically (mapping = 'auto') cannot confirm on its own unless auto_mapping_can_confirm is true. An analyst can override a finding in findings.json: \"analyst_override\": {\"confidence\": \"confirmed\", \"by\": \"name\", \"reason\": \"...\"}, then regenerate the report.",
+  "min_independent_sources": 2,
+  "corroboration_severities": ["critical", "high"],
+  "auto_mapping_can_confirm": false
+ },
  "limits": {
   "max_tool_calls_per_step": 40,
   "max_result_chars": 15000,

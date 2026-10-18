@@ -25,6 +25,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
+from guards import shown_confidence
+
 SEV_LABEL = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Informational"}
 SEV_COLOR = {"critical": "7B0000", "high": "C00000", "medium": "E36C09", "low": "4F81BD", "info": "7F7F7F"}
 SEV_ORDER = {k: i for i, k in enumerate(["critical", "high", "medium", "low", "info"])}
@@ -178,6 +180,21 @@ def evidence_rows(evs, max_desc=350):
     return rows
 
 
+def confidence_rows(x: dict) -> list:
+    """Independent sources, evidence-policy notes and analyst override of a finding or an answer."""
+    rows = []
+    if x.get("sources"):
+        rows.append(("Independent sources", "\n".join(x["sources"])))
+    if x.get("confidence_notes"):
+        rows.append(("Evidence policy", "\n".join(x["confidence_notes"])))
+    if any(e.get("mapping") == "auto" for e in x.get("evidence", [])):
+        rows.append(("Mapping", "some evidence comes from outputs mapped automatically (not validated): check the raw records"))
+    ov = x.get("analyst_override") or {}
+    if ov.get("confidence"):
+        rows.append(("Analyst override", f"{ov['confidence']} by {ov.get('by') or '?'}: {ov.get('reason') or '(no reason given)'}"))
+    return rows
+
+
 def sha256_file(p: Path) -> str:
     h = hashlib.sha256()
     with p.open("rb") as fh:
@@ -282,7 +299,7 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     if findings:
         doc.add_heading("Main findings", level=2)
         add_table(doc, ["ID", "Severity", "Confidence", "Finding", "Period (UTC)"],
-                  [[f["id"], (SEV_LABEL[f["severity"]], SEV_COLOR[f["severity"]]), f["confidence"], f["title"],
+                  [[f["id"], (SEV_LABEL[f["severity"]], SEV_COLOR[f["severity"]]), shown_confidence(f), f["title"],
                     f"{f.get('first_ts') or '?'} → {f.get('last_ts') or '?'}"] for f in findings if f["severity"] != "info"][:40],
                   widths=[1.4, 2, 2, 8, 4])
     if sm.get("technical_summary"):
@@ -345,7 +362,13 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
                    ("Instructions", guidance["instructions"].strip() or "none")])
     doc.add_heading("2.5 Limitations of the analysis", level=2)
     para(doc, sm.get("limitations") or "(not provided)")
-    gaps = [(s, v) for s, v in sorted(d["steps"].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999) if v.get("gaps")]
+    lowered = [x["id"] for x in d["findings"] if x.get("confidence_notes")]
+    if lowered:
+        bullet(doc, f"Confidence lowered by the evidence policy (insufficient corroboration or unvalidated mapping): {', '.join(lowered)}.")
+    if d.get("injection_alerts"):
+        bullet(doc, f"{len(d['injection_alerts'])} excerpt(s) of the evidence look like instructions addressed to an AI: "
+                    "see the appendix \"Text addressed to an AI found in the evidence\".")
+    gaps =[(s, v) for s, v in sorted(d["steps"].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999) if v.get("gaps")]
     for s, v in gaps:
         bullet(doc, f"Step {s} ({v.get('title')}): {v['gaps']}")
     bad = [r for r in jobs if r[2] != "ok"]
@@ -391,7 +414,8 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
             para(doc, ssum, italic=True, size=9)
         for f in sorted(grouped[snum], key=lambda f: (SEV_ORDER.get(f["severity"], 9), f.get("first_ts") or "")):
             doc.add_heading(f"{f['id']}: {f['title']}", level=3)
-            kv_table(doc, [("Severity", (SEV_LABEL[f["severity"]], SEV_COLOR[f["severity"]])), ("Confidence", f["confidence"]),
+            kv_table(doc, [("Severity", (SEV_LABEL[f["severity"]], SEV_COLOR[f["severity"]])), ("Confidence", shown_confidence(f)),
+                           *confidence_rows(f),
                            ("Category", f.get("category") or ""), ("MITRE ATT&CK", ", ".join(f.get("mitre") or []) or "n/a"),
                            ("Period (UTC)", f"{f.get('first_ts') or '?'} → {f.get('last_ts') or '?'}")])
             doc.add_paragraph().add_run("Observed facts").bold = True
@@ -430,7 +454,7 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     answered = {a["question"] for a in d["answers"]}
     for a in d["answers"]:
         doc.add_heading(a["question"], level=3)
-        kv_table(doc, [("Confidence", a.get("confidence") or "")])
+        kv_table(doc, [("Confidence", shown_confidence(a)), *confidence_rows(a)])
         para(doc, a["answer"])
         if a.get("evidence"):
             add_table(doc, ["UTC", "Artifact", "Detail", "Reference", "Original source"], evidence_rows(a["evidence"]),
@@ -482,6 +506,15 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         doc.add_heading("Appendix C: Working notes (leads ruled out, false positives)", level=1)
         for n in d["notes"]:
             bullet(doc, f"[step {n.get('step')}] {n['text']}")
+
+    if d.get("injection_alerts"):
+        doc.add_heading("Appendix C bis: Text addressed to an AI found in the evidence", level=1)
+        para(doc, "During the analysis, the program found in the case data text that looks like instructions addressed to an AI "
+                  "model or an analyst. It was passed to the model as untrusted data and never followed. Such text can be an "
+                  "attempt to mislead an automated analysis (anti-forensics) and should be reviewed by the analyst.", size=9)
+        add_table(doc, ["Step", "Tool / query", "Excerpt"],
+                  [[str(a.get("step")), f"{a.get('tool')}: {a.get('query') or ''}", a.get("excerpt") or ""]
+                   for a in d["injection_alerts"][:200]], widths=[1.3, 5.5, 10.2], font=7)
 
     if d.get("ioc_sweep"):
         doc.add_heading("Appendix D: Automatic sweep of the provided IOCs", level=1)

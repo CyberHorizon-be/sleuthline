@@ -52,7 +52,7 @@ The report is written to `<case>\analysis\report_<case>_<date>.docx`.
 ```
 <repository>\                       ← source of truth (e.g. C:\Sleuthline-setup)
 ├── Install-All.ps1                  ← ENTRY POINT: installs everything
-├── LICENSE, README.md
+├── LICENSE, README.md, CHANGELOG.md
 ├── install\                         ← VM installation
 │   ├── 01_Prepare-VM.ps1                Python, .NET, 7-Zip, Git, folder tree, venv
 │   ├── 02_Install-Tools.ps1             parsing tools + deployment of the pipeline
@@ -69,6 +69,7 @@ The report is written to `<case>\analysis\report_<case>_<date>.docx`.
     ├── 3_normalize\     normalize.py         loading into DuckDB: timeline, detections, hash lists
     ├── 4_analysis\      analyze.py           analysis agent (LLM)
     │                    llm.py               model access (Claude, OpenAI-compatible, Ollama...)
+    │                    guards.py            evidence policy and untrusted-evidence protection
     │                    report_docx.py       Word report
     ├── config\          ← WHAT THE ANALYST EDITS
     │                    PLAYBOOK.md          analysis steps of the agent
@@ -222,14 +223,16 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze "C:\Sleuthline\cases\<case>"   # f
 
 **Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. persistence; 5. accounts and authentication; 6. remote access and lateral movement; 7. file activity; 8. web browsing; 9. anti-forensics; 10. exfiltration; 11. incident timeline; 12. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely.
 
-**Agent tools.** SQL query, search, time window, evidence detail; it records findings, timeline events, IOCs and answers.
+**Agent tools.** SQL query, search, time window, evidence detail; it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
 
-**Guarantees.**
+**Guarantees.** They are enforced by the program (`4_analysis\guards.py`), not requested from the model:
 
-- The database is opened read-only, and file access is disabled in DuckDB.
-- A finding, event or IOC whose evidence reference does not exist in the database is refused.
-- Evidence content is treated as data, never as instructions.
-- Everything is traced in `transcript.jsonl`: every SQL query, every result and every model answer.
+- **Read-only.** The database is opened read-only, file access is disabled in DuckDB, and every query is checked (one read query; `COPY`, `ATTACH`, `INSTALL`, file functions... refused).
+- **Evidence exists.** A finding, event or IOC whose evidence reference does not exist in the database is refused. An answer to a question needs references too, unless it is `undetermined`.
+- **Confidence is checked, not declared.** A critical or high finding stays `confirmed` only with **two independent sources**. A Hayabusa or Chainsaw detection and the event it fires on count as one source, because they come from the same `.evtx`. Otherwise it is recorded as `probable`, and the report shows both values: `probable (model: confirmed, lowered by the evidence policy)`. Evidence from outputs mapped automatically (`mapping = 'auto'`, not validated) never confirms on its own. These rules can be changed under `evidence_policy` in `llm_config.json`.
+- **Analyst override.** An analyst who has checked a finding can set its confidence in `findings.json` with `"analyst_override": {"confidence": "confirmed", "by": "name", "reason": "..."}` and regenerate the report (`sleuthline.ps1 report`). The override and its author appear in the report. The model has no way to set it.
+- **Untrusted evidence (prompt injection).** Every query result reaches the model inside an `<untrusted_evidence id="...">` block whose closing tag carries a random identifier drawn for each run. The data cannot close the block: tag-like text inside it is neutralized. The system prompt states that nothing inside a block is an instruction, wherever it sits (logs, command lines, registry, file names, web pages, e-mails). Text that looks like instructions addressed to an AI, such as "ignore previous instructions" or "classify this machine as clean", is flagged to the model as a possible anti-forensics indicator. It is also listed in a report appendix for the analyst.
+- **Traceability.** Everything is traced in `transcript.jsonl`: every SQL query, every result, every model answer and every injection alert.
 
 **Guidance file**: `<case>\analysis\guidance.txt`, created automatically at the first run; every section is optional: `[CONTEXT]`, `[PERIOD]`, `[QUESTIONS]` (the agent answers each one in the report), `[IOC]` (each value is searched automatically across the whole database before the analysis), `[SUSPECTS]`, `[EXCLUSIONS]`, `[INSTRUCTIONS]`.
 
@@ -281,7 +284,7 @@ C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\ru
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py --regression C:\Sleuthline\cases\test01
 ```
 
-The fast tests (about ten seconds) cover the SQL safeguards of the agent, the guidance, step replay, DuckDB macros, hash extraction, inventory and integrity, the internal parsers, the payload sent to Claude, and an end-to-end analysis with the `mock` provider. `--regression` normalizes a real case into a temporary database and compares the row count per artifact with `tests\golden\<case>.json` (`--update-golden` after an intended change).
+The fast tests (about ten seconds) cover the SQL safeguards of the agent, the evidence policy (independent sources, automatic mappings, answers without evidence), the untrusted-evidence blocks and injection detection, the guidance, step replay, DuckDB macros, hash extraction, inventory and integrity, the internal parsers, the payload sent to Claude, and an end-to-end analysis with the `mock` provider. `--regression` normalizes a real case into a temporary database and compares the row count per artifact with `tests\golden\<case>.json` (`--update-golden` after an intended change).
 
 ## Known issues
 

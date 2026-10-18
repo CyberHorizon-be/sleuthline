@@ -19,7 +19,8 @@ Inspired by the SANS FOR500/FOR508 methodologies (triage, execution, persistence
    - Wi-Fi profile (`raw.native_wifi`) = configured network; the XML creation approximates the first connection, connection dates are in `raw.reg_knownnetworks` / `raw.dissect_network_history`;
    - `$FN` dates are more reliable than `$SI` in case of timestomping (SI<FN);
    - rows with `mapping = 'auto'` are not validated: check the raw table before citing them.
-5. **Corroborate.** An important finding relies, when possible, on at least two independent sources (e.g. Prefetch + 4688 + Amcache).
+5. **Corroborate.** An important finding relies on at least two independent sources (e.g. Prefetch + 4688 + Sysmon 1). The program enforces it: a critical or high finding is kept as `confirmed` only with two independent sources (a Hayabusa/Chainsaw detection and the event it fires on are ONE source: the same .evtx), otherwise it is recorded as `probable`. Add corroborating references with `add_evidence` when you find them. Evidence with `mapping = 'auto'` never confirms on its own.
+   Separate in each finding the **facts** (`description`: what the records show, with UTC times and identifiers) from the **interpretation** (`analysis`: what it means, alternatives, certainty). An answer to a question cites its evidence, unless it is `undetermined`.
 6. **Pivot.** Every new item (file, hash, user, IP, time) is searched in the other sources: time window around it (± 5 to 30 min), same path in `$MFT`/`$J`, same name in the EVTX.
 7. **Separate the noise from the analyst's activity.** Collection and analysis tools (KAPE, Sleuthline, EZTools, Hayabusa...) and normal system activity are not findings, unless the guidance says otherwise. Report them once as context.
 8. **Be exhaustive and technical.** Full paths, hashes, EventIDs, SIDs, RecordIDs, registry values, command lines: the final report must allow another analyst to re-check everything.
