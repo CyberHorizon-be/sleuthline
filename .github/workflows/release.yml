@@ -1,0 +1,46 @@
+# Creates the GitHub release of the latest version of CHANGELOG.md ("## X.Y.Z (date)"),
+# with its notes, when that version has no tag yet. Runs on every push to main that
+# changes CHANGELOG.md, and on demand (Actions > Release > Run workflow).
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [CHANGELOG.md]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the latest version of CHANGELOG.md
+        id: v
+        run: |
+          version=$(grep -m1 -oP '^## \K[0-9]+\.[0-9]+(\.[0-9]+)?' CHANGELOG.md)
+          [ -n "$version" ] || { echo "No version found in CHANGELOG.md"; exit 1; }
+          awk -v v="$version" '
+            $0 ~ "^## " v "( |$)" {on=1; next}
+            on && /^## / {exit}
+            on {print}' CHANGELOG.md > notes.md
+          printf '\n**Upgrade:** `cd C:\\Sleuthline-setup; git pull; .\\install\\02_Install-Tools.ps1 -Only Pipeline`\n' >> notes.md
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create the release if it does not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.v.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists: nothing to do."
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --title "Sleuthline $tag" \
+              --notes-file notes.md --latest
+          fi

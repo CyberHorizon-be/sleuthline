@@ -11,6 +11,7 @@ Forensic guarantees are now enforced by the program instead of requested from th
 - **Prompt injection.** Case data reaches the model only inside `<untrusted_evidence>` blocks with a per-run random closing identifier. Tag-like text in the data is neutralized. Truncated results keep their block closed. Text addressed to an AI is detected, flagged to the model as a possible anti-forensics indicator and listed in a report appendix. The system prompt has a stricter security policy.
 - Configuration: new `evidence_policy` section in `llm_config.json`. Playbook rule 5 updated (corroboration, facts vs interpretation).
 - Tests: 35 tests, including the evidence policy, untrusted blocks, injection detection, and an end-to-end run with an injected event.
+- CI: the GitHub release of each version is created automatically from this changelog (`.github/workflows/release.yml`).
 
 ## 0.9 (2026-10-18)
 
