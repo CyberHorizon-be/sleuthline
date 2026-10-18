@@ -62,8 +62,6 @@ SEVERITIES = ["critical", "high", "medium", "low", "info"]
 CONFIDENCES = ["confirmed", "probable", "possible"]
 UNDETERMINED = "undetermined"
 DONE, RUNNING = "done", "running"
-# Values written by versions before 1.1 (French): converted when findings.json is loaded
-LEGACY_VALUES = {"confirmé": "confirmed", "indéterminé": UNDETERMINED, "terminée": DONE, "en cours": RUNNING}
 LANGUAGES = {"en": "English", "fr": "French", "de": "German", "nl": "Dutch", "es": "Spanish", "it": "Italian",
              "pt": "Portuguese"}
 
@@ -123,21 +121,20 @@ def parse_playbook(path: Path):
     for part in parts[1:]:
         title, _, body = part.partition("\n")
         title = title.strip()
-        m = re.match(r"(?i)(?:step|[ée]tape)\s+(\d+)\s*[:\-—]\s*(.+)", title)
+        m = re.match(r"(?i)step\s+(\d+)\s*[:\-—]\s*(.+)", title)
         if m:
             steps.append({"num": int(m.group(1)), "title": m.group(2).strip(), "body": body.strip()})
-        elif title.lower().startswith(("rules", "règles", "regles")):
+        elif title.lower().startswith("rules"):
             rules = body.strip()
     if not steps:
         raise SystemExit(f"No step (\"## Step N: title\") in {path}")
     return rules, steps
 
 
-# Guidance sections (French names of versions before 1.1 still accepted)
-GUIDANCE_SECTIONS = {"context": "context", "contexte": "context", "period": "period", "periode": "period",
-                     "questions": "questions", "ioc": "ioc", "iocs": "ioc", "suspects": "suspects",
-                     "exclusions": "exclusions", "instructions": "instructions", "consignes": "instructions"}
-PERIOD_KEYS = {"start": "start", "debut": "start", "début": "start", "end": "end", "fin": "end"}
+# Guidance sections
+GUIDANCE_SECTIONS = {"context": "context", "period": "period", "questions": "questions", "ioc": "ioc", "iocs": "ioc",
+                     "suspects": "suspects", "exclusions": "exclusions", "instructions": "instructions"}
+PERIOD_KEYS = {"start": "start", "end": "end"}
 
 
 def parse_guidance(path: Path) -> dict:
@@ -151,7 +148,7 @@ def parse_guidance(path: Path) -> dict:
             continue
         m = re.match(r"^\[([^\]]+)\]$", line)
         if m:
-            name = m.group(1).strip().lower().replace("é", "e")
+            name = m.group(1).strip().lower()
             section = GUIDANCE_SECTIONS.get(name, name)
             continue
         if section == "context":
@@ -407,20 +404,11 @@ class State:
         self.path = path
         if path.exists():
             self.d = json.loads(path.read_text(encoding="utf-8"))
-            self.migrate()
+            self.d.setdefault("injection_alerts", [])
         else:
             self.d = {"version": VERSION, "created": now_utc(), "steps": {}, "findings": [], "timeline_events": [],
                       "iocs": [], "answers": [], "summary": {}, "recommendations": {}, "notes": [], "ioc_sweep": None, "injection_alerts": [],
                       "usage": {"input_tokens": 0, "output_tokens": 0, "calls": 0}, "runs": []}
-
-    def migrate(self):
-        """findings.json written by a version before 1.1 (French values): converted in place."""
-        for key in ("findings", "answers"):
-            for x in self.d.get(key, []):
-                x["confidence"] = LEGACY_VALUES.get(x.get("confidence"), x.get("confidence"))
-        for s in self.d.get("steps", {}).values():
-            s["status"] = LEGACY_VALUES.get(s.get("status"), s.get("status"))
-        self.d.setdefault("injection_alerts", [])
 
     def save(self):
         tmp = self.path.with_suffix(".tmp")
@@ -619,7 +607,6 @@ class Agent:
     def t_add_finding(self, title, severity, confidence, description, refs, category="", mitre=None, analysis=""):
         if severity not in SEVERITIES:
             return f"ERROR: severity must be one of {SEVERITIES}"
-        confidence = LEGACY_VALUES.get(confidence, confidence)
         if confidence not in CONFIDENCES:
             return f"ERROR: confidence must be one of {CONFIDENCES}"
         ev, err = self.resolve_all(refs)
@@ -690,7 +677,6 @@ class Agent:
         return f"OK: IOC {i['id']} recorded."
 
     def t_answer_question(self, question, answer, confidence, refs=None):
-        confidence = LEGACY_VALUES.get(confidence, confidence)
         if confidence not in CONFIDENCES + [UNDETERMINED]:
             return f"ERROR: confidence must be one of {CONFIDENCES + [UNDETERMINED]}"
         ev = []

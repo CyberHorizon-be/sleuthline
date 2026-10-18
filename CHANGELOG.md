@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Removed the compatibility with the pre-release French version (`dfir.ps1`, `-DfirRoot`, `dfir-config.json`, French command, guidance and playbook names, French values in `findings.json`).
+- Regression references (`tests/golden/`) are local to each machine and no longer published.
+
 ## 0.9.1 (2026-10-19)
 
 Forensic guarantees are now enforced by the program instead of requested from the model, following the first public review.

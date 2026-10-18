@@ -22,7 +22,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Alias('DfirRoot')][string]$Root = 'C:\Sleuthline',
+    [string]$Root = 'C:\Sleuthline',
     [string]$OutFile,
     [string]$GitHubToken = $env:GITHUB_TOKEN
 )
@@ -41,16 +41,9 @@ $UserAgent = 'Sleuthline-Installer'
 $gh = @{ 'User-Agent' = $UserAgent; 'Accept' = 'application/vnd.github+json' }
 if ($GitHubToken) { $gh['Authorization'] = "Bearer $GitHubToken" }
 
-# Tool key (-Only parameter of 02_Install-Tools.ps1) for manifests older than the "key" field
-$keyByName = [ordered]@{
-    'EZTools*' = 'EZTools'; 'Hayabusa*' = 'Hayabusa'; 'Chainsaw*' = 'Chainsaw'; 'SigmaHQ*' = 'Sigma'; 'R*gles SigmaHQ*' = 'Sigma'
-    'Zircolite*' = 'Zircolite'; 'LogFileParser*' = 'LogFileParser'; 'SIDR*' = 'SIDR'; 'BitsParser*' = 'BitsParser'
-    'WMI_Forensics*' = 'WMIForensics'; 'Hindsight*' = 'Hindsight'; 'bmc-tools*' = 'BmcTools'; 'Dissect*' = 'Dissect'
-    'plaso*' = 'Plaso'; 'odl.py*' = 'OneDriveODL'; 'KAPE*' = 'KAPE'
-}
+# Tool key (-Only parameter of 02_Install-Tools.ps1)
 function Get-ToolKey ($t) {
     if ($t.PSObject.Properties['key'] -and $t.key) { return $t.key }
-    foreach ($k in $keyByName.Keys) { if ($t.name -like $k) { return $keyByName[$k] } }
     return $null
 }
 function Get-Downloads ($t) {
@@ -124,11 +117,8 @@ foreach ($rel in $script:LockTrees) {
     if ($h) { $trees[$rel] = $h }
 }
 
-$cfg = $null
-foreach ($name in 'sleuthline-config.json', 'dfir-config.json') {
-    $p = Join-Path $Root $name
-    if (-not $cfg -and (Test-Path $p)) { $cfg = Get-Content $p -Raw | ConvertFrom-Json }
-}
+$cfgPath = Join-Path $Root 'sleuthline-config.json'
+$cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw | ConvertFrom-Json } else { $null }
 if (-not $cfg) { throw "sleuthline-config.json not found in $Root (run install\01_Prepare-VM.ps1)" }
 $lock = [ordered]@{
     _doc         = 'Exact versions of the reference VM. Produced by install\Export-ToolsLock.ps1; used by Install-All.ps1 -Locked.'

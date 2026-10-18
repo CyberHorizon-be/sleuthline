@@ -27,7 +27,7 @@
     Idempotent: a tool already installed is skipped, unless -Force is used.
 
 .PARAMETER Root
-    Installation root (default: C:\Sleuthline, or the value of sleuthline-config.json). Alias: -DfirRoot.
+    Installation root (default: C:\Sleuthline, or the value of sleuthline-config.json).
 
 .PARAMETER Force
     Reinstalls even what is already present (= update to the latest version).
@@ -65,7 +65,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Alias('DfirRoot')][string]$Root,
+    [string]$Root,
     [switch]$Force,
     [ValidateSet('EZTools', 'Hayabusa', 'Chainsaw', 'Sigma', 'Zircolite', 'LogFileParser',
                  'SIDR', 'BitsParser', 'WMIForensics', 'Hindsight', 'BmcTools',
@@ -100,12 +100,10 @@ $env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'
 $DefaultRoot = 'C:\Sleuthline'
 $cfg = $null
 foreach ($base in @($Root, $DefaultRoot) | Where-Object { $_ }) {
-    foreach ($name in 'sleuthline-config.json', 'dfir-config.json') {
-        $p = Join-Path $base $name
-        if (-not $cfg -and (Test-Path $p)) { $cfg = Get-Content $p -Raw | ConvertFrom-Json }
-    }
+    $p = Join-Path $base 'sleuthline-config.json'
+    if (-not $cfg -and (Test-Path $p)) { $cfg = Get-Content $p -Raw | ConvertFrom-Json }
 }
-if (-not $Root) { $Root = if ($cfg -and $cfg.root) { $cfg.root } elseif ($cfg -and $cfg.dfir_root) { $cfg.dfir_root } else { $DefaultRoot } }
+if (-not $Root) { $Root = if ($cfg -and $cfg.root) { $cfg.root } else { $DefaultRoot } }
 
 $ToolsDir  = Join-Path $Root 'tools'
 $RulesDir  = Join-Path $Root 'rules'
@@ -883,12 +881,6 @@ try {
                     'Case-specific lists can also be placed in <case>\hashsets\.',
                     'Taken into account at the next normalization (sleuthline.ps1 normalize <case>).')
             }
-            # Files produced during analyses (proposals) -> local\ (never touched by deployment).
-            # Migration from the former flat layout (files at the root of pipeline\).
-            foreach ($rt in 'registry_proposals.json', 'normalize_proposals.json') {
-                $old = Join-Path $pipeDst $rt
-                if ((Test-Path $old) -and -not (Test-Path (Join-Path $localDir $rt))) { Move-Item $old $localDir }
-            }
             # Mirror of the source (removes obsolete files); local\ and the logs are preserved
             & robocopy.exe $pipeSrc $pipeDst /MIR /R:1 /W:1 /XD 'local' '__pycache__' /XF '*.log' /NFL /NDL /NJH /NJS /NP | Out-Null
             if ($LASTEXITCODE -ge 8) { throw "robocopy failed (code $LASTEXITCODE)" }
@@ -1033,7 +1025,6 @@ try {
         # Partial installation: the entries of the other tools are kept
         (Get-Content $manifestPath -Raw | ConvertFrom-Json).tools | ForEach-Object { $existing[$_.name] = $_ }
     }
-    foreach ($oldName in 'Agent DFIR', 'Pipeline DFIR') { $existing.Remove($oldName) }   # former names of the pipeline entry
     foreach ($res in $Results) { $existing[$res.name] = $res }
     $manifest = [ordered]@{
         generated_at = (Get-Date).ToString('o')

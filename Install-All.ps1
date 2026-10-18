@@ -23,7 +23,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Alias('DfirRoot')][string]$Root = 'C:\Sleuthline',
+    [string]$Root = 'C:\Sleuthline',
     [switch]$AddDefenderExclusion,
     [switch]$EnableLongPaths,
     [switch]$ForceTools,

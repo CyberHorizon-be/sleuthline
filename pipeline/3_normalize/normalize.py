@@ -63,9 +63,8 @@ AUTO_MAX_TIME_COLS = 12
 
 # File statuses (sources table)
 LOADED, EMPTY, IGNORED, ERROR = "loaded", "empty", "ignored", "error"
-# Proposal statuses (French values written by versions before 1.1 are still understood)
+# Proposal statuses
 PROPOSED, INTEGRATED = "proposed", "integrated"
-LEGACY_PROPOSAL_STATUS = {"proposé": PROPOSED, "intégré": INTEGRATED}
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -951,8 +950,6 @@ class Normalizer:
         except ValueError:
             existing = []
         by_table = {p.get("table"): p for p in existing if isinstance(p, dict)}
-        for prop in by_table.values():
-            prop["status"] = LEGACY_PROPOSAL_STATUS.get(prop.get("status"), prop.get("status"))
         # Proposals now covered by a validated mapping: marked "integrated"
         changed = False
         for prop in by_table.values():

@@ -13,7 +13,7 @@
     Idempotent: can be run again safely, what is already installed is skipped.
 
 .PARAMETER Root
-    Installation root (default: C:\Sleuthline). Alias: -DfirRoot.
+    Installation root (default: C:\Sleuthline).
 
 .PARAMETER AddDefenderExclusion
     Adds the root to the Windows Defender exclusions.
@@ -33,7 +33,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Alias('DfirRoot')][string]$Root = 'C:\Sleuthline',
+    [string]$Root = 'C:\Sleuthline',
     [switch]$AddDefenderExclusion,
     [switch]$EnableLongPaths,
     [switch]$SkipGit,

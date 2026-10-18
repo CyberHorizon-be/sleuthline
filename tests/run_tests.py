@@ -6,8 +6,8 @@ Sleuthline tests (standard library + duckdb + python-docx, already present in th
   ... run_tests.py --regression "C:\\Sleuthline\\cases\\test01"                             + regression on a real case
   ... run_tests.py --regression "C:\\Sleuthline\\cases\\test01" --update-golden             (re)records the reference
 
-Fast tests: SQL safeguards of the agent, guidance (and French section names of the first version), identifiers
-and step replay, migration of an older findings.json, DuckDB macros (dates, paths), hash extraction from the EVTX,
+Fast tests: SQL safeguards of the agent, guidance, identifiers
+and step replay, DuckDB macros (dates, paths), hash extraction from the EVTX,
 inventory (classification, CopyLog, integrity), internal parsers, payload sent to the Anthropic provider, and a
 complete end-to-end analysis with the "mock" provider on a small synthetic database (verified evidence, refusal of
 non-existent references, Word report), evidence policy (corroboration, automatic mappings, answers without
@@ -80,14 +80,6 @@ class TestGuidance(unittest.TestCase):
         self.assertEqual(g["iocs"][1]["type"], "text")
         self.assertEqual(g["period"], {"start": "2023-11-10 10:00"})
 
-    def test_legacy_french_sections(self):
-        """guidance.txt files of the first (French) version are still read."""
-        g = self.parse("[CONTEXTE]\nAlerte EDR\n[PERIODE]\ndebut = 2023-11-10 10:00\nfin = 2023-11-10 12:00\n"
-                       "[CONSIGNES]\nPrioriser le réseau\n")
-        self.assertIn("Alerte EDR", g["context"])
-        self.assertEqual(g["period"], {"start": "2023-11-10 10:00", "end": "2023-11-10 12:00"})
-        self.assertIn("Prioriser", g["instructions"])
-
     def test_select_steps(self):
         steps = [{"num": n} for n in range(1, 13)]
         self.assertEqual(analyze.select_steps("1,3-5", steps), {1, 3, 4, 5})
@@ -96,10 +88,10 @@ class TestGuidance(unittest.TestCase):
     def test_playbook_titles(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "PLAYBOOK.md"
-            p.write_text("# P\n\n## Rules\n\nr\n\n## Step 1: One\n\na\n\n## Étape 2 : Deux\n\nb\n", encoding="utf-8")
+            p.write_text("# P\n\n## Rules\n\nr\n\n## Step 1: One\n\na\n\n## Step 2 - Two\n\nb\n", encoding="utf-8")
             rules, steps = analyze.parse_playbook(p)
         self.assertEqual(rules, "r")
-        self.assertEqual([(s["num"], s["title"]) for s in steps], [(1, "One"), (2, "Deux")])
+        self.assertEqual([(s["num"], s["title"]) for s in steps], [(1, "One"), (2, "Two")])
 
 
 class TestState(unittest.TestCase):
@@ -114,16 +106,6 @@ class TestState(unittest.TestCase):
             self.assertEqual(st.next_id("F", "findings"), "F-004")
             self.assertEqual(st.next_id("I", "iocs"), "I-001")
 
-    def test_legacy_findings_migrated(self):
-        """findings.json written by the first (French) version: values converted on load."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "findings.json"
-            p.write_text(json.dumps({"steps": {"1": {"status": "terminée"}}, "findings": [{"id": "F-001", "confidence": "confirmé"}],
-                                     "answers": [{"question": "q", "confidence": "indéterminé"}]}), encoding="utf-8")
-            st = analyze.State(p)
-        self.assertEqual(st.d["steps"]["1"]["status"], analyze.DONE)
-        self.assertEqual(st.d["findings"][0]["confidence"], "confirmed")
-        self.assertEqual(st.d["answers"][0]["confidence"], analyze.UNDETERMINED)
 
 
 # ------------------------------------------------------------------------------------------

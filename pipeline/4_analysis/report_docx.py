@@ -206,13 +206,12 @@ def sha256_file(p: Path) -> str:
 def integrity_text(raw) -> str:
     """Result of the KAPE SHA-1 check (inventory.py), stored as JSON in meta."""
     try:
-        i = json.loads(raw) if raw and raw not in ("not checked", "non vérifiée") else None
+        i = json.loads(raw) if raw and raw != "not checked" else None
     except (TypeError, ValueError):
         i = None
     if not i:
         return "not checked (run the inventory again with a recent version of the pipeline)"
-    verdict = {"INTÈGRE": "INTACT"}.get(i.get("verdict"), i.get("verdict"))
-    txt = (f"{verdict}: {i.get('ok', 0)} file(s) matching the SHA-1 recorded by KAPE, "
+    txt = (f"{i.get('verdict')}: {i.get('ok', 0)} file(s) matching the SHA-1 recorded by KAPE, "
            f"{i.get('mismatch', 0)} different, {i.get('missing', 0)} missing, "
            f"{i.get('no_reference', 0)} without KAPE hash, {i.get('live_copy_mismatch', 0)} expected difference(s) on "
            f"files copied live in raw mode (checked on {i.get('checked_at')})")

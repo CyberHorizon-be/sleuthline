@@ -62,7 +62,7 @@ The report is written to `<case>\analysis\report_<case>_<date>.docx`.
 │   └── kape.zip                         (to be added yourself; installed automatically; NEVER published)
 ├── tests\run_tests.py               ← tests (fast + optional regression on your own case)
 └── pipeline\                        ← the analysis pipeline (deployed to <root>\pipeline)
-    ├── sleuthline.ps1                   ← LAUNCHER: sleuthline.ps1 <step> <case>  (dfir.ps1 = former name)
+    ├── sleuthline.ps1                   ← LAUNCHER: sleuthline.ps1 <step> <case>
     ├── 1_inventory\     inventory.py         collection inventory, coverage, integrity, gaps
     ├── 2_parsing\       orchestrator.py      runs the tools on the collection
     │                    sample_outputs.py    samples of the outputs (development aid)

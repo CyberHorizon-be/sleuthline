@@ -40,9 +40,6 @@ $scripts = [ordered]@{
     normalize = '3_normalize\normalize.py'
     analyze   = '4_analysis\analyze.py'
 }
-# Command names of the first (French) version, still accepted
-$aliases = @{ inventaire = 'inventory'; parsing = 'parse'; normalisation = 'normalize'; analyse = 'analyze'
-              question = 'ask'; rapport = 'report'; tout = 'all'; aide = 'help' }
 
 function Invoke-Step([string]$Name, [string[]]$Extra) {
     $script = Join-Path $pipe $scripts[$Name]
@@ -53,17 +50,14 @@ function Invoke-Step([string]$Name, [string[]]$Extra) {
 }
 
 $cmd = $Command.ToLowerInvariant()
-if ($aliases.ContainsKey($cmd)) { $cmd = $aliases[$cmd] }
 if ($cmd -in 'help', '-h', '--help' -or (-not $Case)) {
     Get-Help $PSCommandPath -Detailed | Out-String -Width 120 | Write-Host
     return
 }
 if (-not (Test-Path $Case)) { throw "Case folder not found: $Case" }
 $py = $null
-foreach ($name in 'sleuthline-config.json', 'dfir-config.json') {
-    $cfgPath = Join-Path $root $name
-    if (-not $py -and (Test-Path $cfgPath)) { $py = (Get-Content $cfgPath -Raw | ConvertFrom-Json).orchestrator_py }
-}
+$cfgPath = Join-Path $root 'sleuthline-config.json'
+if (Test-Path $cfgPath) { $py = (Get-Content $cfgPath -Raw | ConvertFrom-Json).orchestrator_py }
 if (-not $py -or -not (Test-Path $py)) { $py = Join-Path $root 'venvs\orchestrator\Scripts\python.exe' }
 if (-not (Test-Path $py)) { throw "Orchestrator Python not found: $py (run Install-All.ps1)" }
 
