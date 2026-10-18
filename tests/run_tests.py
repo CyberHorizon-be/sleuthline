@@ -14,7 +14,8 @@ non-existent references, Word report), evidence policy (corroboration, automatic
 evidence) and protection against prompt injection from the evidence.
 
 Regression: normalizes the case (from its parsed\\ folder) into a temporary database and compares, artifact per
-artifact, the number of timeline rows and detections with tests\\golden\\<case>.json.
+artifact, the number of timeline rows and detections with tests\\golden\\<case>.json (recorded at the first run;
+local to the machine, ignored by git).
 """
 from __future__ import annotations
 

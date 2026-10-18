@@ -60,7 +60,7 @@ The report is written to `<case>\analysis\report_<case>_<date>.docx`.
 │   ├── tools-lock.json                  exact versions of the reference VM (-Locked installation)
 │   ├── lib\Lock.ps1                     common lock functions
 │   └── kape.zip                         (to be added yourself; installed automatically; NEVER published)
-├── tests\run_tests.py               ← tests (fast + regression on a real case, tests\golden\)
+├── tests\run_tests.py               ← tests (fast + optional regression on your own case)
 └── pipeline\                        ← the analysis pipeline (deployed to <root>\pipeline)
     ├── sleuthline.ps1                   ← LAUNCHER: sleuthline.ps1 <step> <case>  (dfir.ps1 = former name)
     ├── 1_inventory\     inventory.py         collection inventory, coverage, integrity, gaps
@@ -284,7 +284,7 @@ C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\ru
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py --regression C:\Sleuthline\cases\test01
 ```
 
-The fast tests (about ten seconds) cover the SQL safeguards of the agent, the evidence policy (independent sources, automatic mappings, answers without evidence), the untrusted-evidence blocks and injection detection, the guidance, step replay, DuckDB macros, hash extraction, inventory and integrity, the internal parsers, the payload sent to Claude, and an end-to-end analysis with the `mock` provider. `--regression` normalizes a real case into a temporary database and compares the row count per artifact with `tests\golden\<case>.json` (`--update-golden` after an intended change).
+The fast tests (about ten seconds) cover the SQL safeguards of the agent, the evidence policy (independent sources, automatic mappings, answers without evidence), the untrusted-evidence blocks and injection detection, the guidance, step replay, DuckDB macros, hash extraction, inventory and integrity, the internal parsers, the payload sent to Claude, and an end-to-end analysis with the `mock` provider. `--regression` (optional) normalizes one of your own cases into a temporary database and compares the row count per artifact with a reference: the first run records it in `tests\golden\<case>.json` (local, ignored by git), later runs detect any parser or mapping change that adds or loses rows (`--update-golden` after an intended change).
 
 ## Known issues
 

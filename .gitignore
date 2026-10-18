@@ -4,3 +4,6 @@ install/kape.zip
 pipeline/config/api_keys.txt
 __pycache__/
 *.pyc
+
+# Regression references: specific to the maintainer's own cases, created by run_tests.py --regression
+tests/golden/
