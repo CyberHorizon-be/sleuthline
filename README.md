@@ -18,7 +18,7 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization
 - **Any model.** Claude (default), any OpenAI-compatible API, or a local model (Ollama, LM Studio, vLLM) so that no data leaves the VM.
 - **Reproducible.** Tool versions locked in `install\tools-lock.json`, pipeline version (git commit) recorded in the database and the report, tests and regression references.
 
-**Tested on** [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1), a public exercise (Windows 10 workstation compromised with a Meterpreter agent), in a blind run with only the 8 questions of the exercise: **about 50 minutes** from the KAPE collection to the Word report (parsing 27 min, normalization 1 min, analysis 22 min) and **about 7 USD** of Claude Opus 5.5 API usage. The agent answered all 8 questions with their evidence (see [the walkthrough](#analyzing-a-case-step-by-step)). **The generated report:** [PDF](docs/examples/report_threat_hunting_lab1.pdf) · [Word](docs/examples/report_threat_hunting_lab1.docx).
+**Tested on** [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1), a public exercise (Windows 10 workstation compromised with a Meterpreter agent), in a blind run with only the 8 questions of the exercise: **about 50 minutes** from the KAPE collection to the Word report (parsing 27 min, normalization 1 min, analysis 22 min) and **7.23 USD** of Claude Opus 5.5 API usage (amount billed, Claude Console). The agent answered all 8 questions with their evidence (see [the walkthrough](#analyzing-a-case-step-by-step)). **The generated report:** [PDF](docs/examples/report_threat_hunting_lab1.pdf) · [Word](docs/examples/report_threat_hunting_lab1.docx).
 
 > Sleuthline assists an analyst; it is not an automated expert. The report must be reviewed and validated by a qualified analyst before any distribution or decision (see [Limitations and responsibility](#limitations-and-responsibility)).
 
@@ -288,7 +288,7 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze C:\Sleuthline\cases\test01
 
 The only paid step. The agent works through the 12 steps of `PLAYBOOK.md` (context, detections, execution, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
 
-On Lab 1: **22 minutes** for the 12 steps, 153 model calls, 9.0 million input tokens of which 93 % read back from the prompt cache, 124 000 output tokens: **about 7.2 USD** at the Claude Opus 5.5 list prices (cache read 0.20, cache write 5, output 20 USD per million tokens). The exact amount is shown per key in the Claude Console.
+On Lab 1: **22 minutes** for the 12 steps, 153 model calls, 9.0 million input tokens of which 93 % read back from the prompt cache, 124 000 output tokens: **7.23 USD billed** (Claude Console, `check` included), in line with the Claude Opus 5.5 list prices (cache read 0.20, cache write 5, output 20 USD per million tokens).
 
 What the agent found with no IOC given, in its own answers to the questions of the exercise:
 
