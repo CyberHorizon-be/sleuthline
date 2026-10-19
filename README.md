@@ -18,7 +18,7 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization
 - **Any model.** Claude (default), any OpenAI-compatible API, or a local model (Ollama, LM Studio, vLLM) so that no data leaves the VM.
 - **Reproducible.** Tool versions locked in `install\tools-lock.json`, pipeline version (git commit) recorded in the database and the report, tests and regression references.
 
-**Tested on** [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1), a public exercise (Windows 10 workstation compromised with a Meterpreter agent), in a blind run with only the 8 questions of the exercise: **about 50 minutes** from the KAPE collection to the Word report (parsing 27 min, normalization 1 min, analysis 22 min) and **about 7 USD** of Claude Opus 5.5 API usage. The agent answered all 8 questions with their evidence (see [the walkthrough](#analyzing-a-case-step-by-step)).
+**Tested on** [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1), a public exercise (Windows 10 workstation compromised with a Meterpreter agent), in a blind run with only the 8 questions of the exercise: **about 50 minutes** from the KAPE collection to the Word report (parsing 27 min, normalization 1 min, analysis 22 min) and **about 7 USD** of Claude Opus 5.5 API usage. The agent answered all 8 questions with their evidence (see [the walkthrough](#analyzing-a-case-step-by-step)). **The generated report:** [PDF](docs/examples/report_threat_hunting_lab1.pdf) · [Word](docs/examples/report_threat_hunting_lab1.docx).
 
 > Sleuthline assists an analyst; it is not an automated expert. The report must be reviewed and validated by a qualified analyst before any distribution or decision (see [Limitations and responsibility](#limitations-and-responsibility)).
 
@@ -59,6 +59,7 @@ The report is written to `<case>\analysis\report_<case>_<date>.docx`.
 <repository>\                       ← source of truth (e.g. C:\Sleuthline-setup)
 ├── Install-All.ps1                  ← ENTRY POINT: installs everything
 ├── LICENSE, README.md, CHANGELOG.md
+├── docs\examples\                 ← report generated on Threat Hunting Lab 1 (PDF and Word)
 ├── install\                         ← VM installation
 │   ├── 01_Prepare-VM.ps1                Python, .NET, 7-Zip, Git, folder tree, venv
 │   ├── 02_Install-Tools.ps1             parsing tools + deployment of the pipeline
@@ -302,7 +303,7 @@ What the agent found with no IOC given, in its own answers to the questions of t
 | Masquerading as | PuTTY PSCP (OriginalFileName `PSCP`, product "PuTTY suite") |
 | Hashes | MD5, SHA256 and IMPHASH of `pscp.exe` from Sysmon |
 
-Every answer cites the records it relies on, and each critical or high finding was kept as `confirmed` only with two independent sources. The report also lists what was **not** found (persistence, lateral movement, exfiltration) and why.
+Every answer cites the records it relies on, and each critical or high finding was kept as `confirmed` only with two independent sources. The report also lists what was **not** found (persistence, lateral movement, exfiltration) and why. Full report: [PDF](docs/examples/report_threat_hunting_lab1.pdf) (table of contents updated) or [Word](docs/examples/report_threat_hunting_lab1.docx), exactly as produced.
 
 ## Usage
 
