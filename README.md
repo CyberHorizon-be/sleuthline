@@ -158,7 +158,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 
 **Set up the API key (once).** Skip this for a local model (Ollama, LM Studio).
 
-1. Create a key in the [Claude Console](https://platform.claude.com/settings/keys). Choose a **workspace** (e.g. *Default*) when creating it: a key scoped to the whole organization is refused with *"This API key is not scoped to a workspace"*. Add credit to the account (*Plans & Billing*): with a zero balance the API answers *"Your credit balance is too low"*.
+1. Get an API key for your model (for Claude: [Claude Console](https://platform.claude.com/settings/keys)).
 2. Write it in the **repository** copy of the key file, not in the deployed one:
    ```powershell
    notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt    # line: ANTHROPIC_API_KEY = sk-ant-...   (Ctrl+S)
@@ -171,7 +171,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    C:\Sleuthline\pipeline\sleuthline.ps1 check
    # OK: tool call and tool result accepted (8.9 s, 893 input / 54 output tokens). Final answer: 'OK'
    ```
-   On failure, `check` prints the exact error of the API, such as the workspace and credit messages above.
+   On failure, `check` prints the error returned by the API.
 
 **Optional: run the tests** (37 tests, about 10 seconds, no network, no cost):
 ```powershell
