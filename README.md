@@ -25,7 +25,7 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization
 ## Requirements
 
 - Windows 10/11 or Server 2019+ **64-bit**, dedicated and isolated VM
-- Internet access (github.com, api.github.com, pypi.org, download.ericzimmermanstools.com, python.org; msdl.microsoft.com for the Windows symbols used by Volatility 3, at the first analysis of each Windows build)
+- Internet access (github.com, api.github.com, pypi.org, download.ericzimmermanstools.com, python.org; msdl.microsoft.com for the Windows symbols used by Volatility 3, at the first analysis of each Windows build; www.openinfosecfoundation.org and rules.emergingthreats.net for Suricata and its ET Open rules)
 - 100 GB of free space recommended
 - PowerShell started **as administrator**
 - KAPE (optional, only to collect): download it yourself from Kroll and drop `kape.zip` in `install\`
@@ -56,7 +56,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 42 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 48 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -158,6 +158,7 @@ What is installed:
 │   ├── plaso\              plaso (venv): setupapi, PCA
 │   ├── OneDriveODL\        odl.py (venv): OneDrive logs
 │   ├── volatility\         Volatility 3 (venv volatility3): symbols\ and cache\ of the memory analysis
+│   ├── suricata\           Suricata (MSI extracted, not installed) + rules\ (ET Open, suricata-update)
 │   ├── _help\              online help of each installed tool (syntax reference)
 │   └── tools-manifest.json ← version, URL and SHA-256 of each tool
 ├── pipeline\               deployed copy of <repository>\pipeline (do not edit here) + VERSION.json
@@ -201,7 +202,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (42 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (48 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```
@@ -311,7 +312,7 @@ dates of 2026-10-19 are copy artefacts, not evidence.
 C:\Sleuthline\pipeline\sleuthline.ps1 analyze C:\Sleuthline\cases\test01
 ```
 
-The only paid step. The agent works through the steps of `PLAYBOOK.md` (context, detections, execution, memory if an image was provided, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
+The only paid step. The agent works through the steps of `PLAYBOOK.md` (context, detections, execution, memory and network if provided, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
 
 On Lab 1: **22 minutes** for the 12 steps, 153 model calls, 9.0 million input tokens of which 93 % read back from the prompt cache, 124 000 output tokens: **7.23 USD billed** (Claude Console, `check` included), in line with the Claude Opus 5.5 list prices (cache read 0.20, cache write 5, output 20 USD per million tokens).
 
@@ -339,7 +340,7 @@ C:\Sleuthline\pipeline\sleuthline.ps1 all C:\Sleuthline\cases\<case>   # 1 -> 2 
 | Command | Step |
 |---|---|
 | `sleuthline.ps1 inventory <case>` | 1. inventory, coverage and integrity |
-| `sleuthline.ps1 parse <case> [--only job --force] [--memory <image>]` | 2. parsing (and the memory image, if any) |
+| `sleuthline.ps1 parse <case> [--only job --force] [--memory <image>] [--pcap <capture>]` | 2. parsing (and the memory image and network captures, if any) |
 | `sleuthline.ps1 normalize <case>` | 3. DuckDB database |
 | `sleuthline.ps1 analyze <case> [--profile ...]` | 4. agent + Word report |
 | `sleuthline.ps1 ask <case> "text"` | one-off question to the agent |
@@ -383,6 +384,16 @@ A memory image of the same machine can be analyzed with the collection. Put it i
 - **In the database:** one table per plugin (`raw.vol_pslist`, `raw.vol_netscan`, `raw.vol_malfind`...); tree outputs are flattened with a `TreeDepth` column. Process creations, network endpoints, DLL loads and the other timestamped records go into the timeline with an artifact name starting with `Memory:`.
 - **Analysis:** step 4 of the playbook examines the memory and confronts it with the disk. For the evidence policy, everything from the memory image counts as **one** source, distinct from the disk artifacts: a critical finding is `confirmed` with a memory record and a disk record, not with two memory records.
 
+### Network captures (Suricata)
+
+Network captures of the same incident can be analyzed with the collection. Put them in `<case>\pcap\` (`.pcap`, `.pcapng`, `.cap`, sub-folders included, several files allowed), or give them: `sleuthline.ps1 parse <case> --pcap D:\captures\day1.pcap --pcap D:\captures\day2.pcap`. The `parse` step then runs the `suricata` job.
+
+- **The captures are evidence.** They get the read-only attribute, and their SHA-256 is computed first (`parsed\suricata\pcap_files.jsonl`, table `raw.pcap_files`).
+- **Suricata reads them offline** (`suricata -r`), one run per capture, with the `suricata.yaml` shipped with Suricata adjusted for an offline analysis (`parsed\suricata\_suricata.yaml`): EVE output only, file hashes (MD5, SHA-1, SHA-256), community-id, checksum validation off, ET Open rules installed by `suricata-update`. Without rules, the protocol metadata is still produced.
+- **In the database:** the EVE output (`<capture>\raw\eve.jsonl`, kept and hashed) is split by event type, nested fields flattened: `raw.suricata_flow`, `raw.suricata_dns`, `raw.suricata_http`, `raw.suricata_tls`, `raw.suricata_fileinfo`, `raw.suricata_anomaly`, `raw.suricata_eve_smb`, `raw.suricata_eve_rdp`... Alerts go into `detections` (engine `Suricata`, severity 1 / 2 / 3 = high / medium / low); flows, DNS, HTTP, TLS and files go into the timeline. File hashes are compared with the hash lists.
+- **Installation:** the Suricata Windows MSI is **extracted** (`msiexec /a`), not installed: no service, no driver, nothing in Program Files. Reading capture files does not need Npcap; if `suricata.exe` reports a missing `wpcap.dll`, installing Npcap is your decision (it is a system driver).
+- **Analysis:** step 5 of the playbook examines the traffic and confronts it with the disk and the memory. For the evidence policy, everything from the captures counts as **one** source, distinct from the disk and the memory.
+
 ### 3. Normalization into DuckDB
 
 ```powershell
@@ -424,7 +435,7 @@ The database is fully rebuilt at each run (written to a temporary file, then rep
 C:\Sleuthline\pipeline\sleuthline.ps1 analyze "C:\Sleuthline\cases\<case>"   # full analysis + Word report
 ```
 
-**Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. memory (RAM), only if a memory image was analyzed; 5. persistence; 6. accounts and authentication; 7. remote access and lateral movement; 8. file activity; 9. web browsing; 10. anti-forensics; 11. exfiltration; 12. incident timeline; 13. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely.
+**Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. memory (RAM), only if a memory image was analyzed; 5. network traffic, only if captures were analyzed; 6. persistence; 7. accounts and authentication; 8. remote access and lateral movement; 9. file activity; 10. web browsing; 11. anti-forensics; 12. exfiltration; 13. incident timeline; 14. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely.
 
 **Agent tools.** SQL query, search, time window, evidence detail; it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
 

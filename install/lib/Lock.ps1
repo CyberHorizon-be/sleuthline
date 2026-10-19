@@ -10,7 +10,8 @@ $script:LockTrees = @(
     'chainsaw\rules', 'chainsaw\mappings',
     'zircolite\rules',
     'EZTools\net9\EvtxeCmd\Maps', 'EZTools\net9\RECmd\BatchExamples', 'EZTools\net9\RECmd\Plugins',
-    'EZTools\net9\SQLECmd\Maps'
+    'EZTools\net9\SQLECmd\Maps',
+    'suricata\rules'
 )
 
 # Fingerprint of a folder: SHA-256 of the sorted list "relative path | SHA-256 of the file"

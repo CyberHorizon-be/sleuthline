@@ -43,6 +43,7 @@ import llm  # noqa: E402
 import normalize  # noqa: E402
 import orchestrator  # noqa: E402
 import memory  # noqa: E402
+import network  # noqa: E402
 
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
@@ -684,6 +685,192 @@ class TestMemory(unittest.TestCase):
             log = (ctx.out / "volatility" / "_run.log").read_text(encoding="utf-8")
             self.assertIn("Unsatisfied requirement", log)
             self.assertFalse((ctx.out / "volatility" / "windows.pslist.PsList.jsonl").exists())
+
+
+# ------------------------------------------------------------------------------------------
+# Network: Suricata job (fake "suricata" writing EVE events recorded from a real Suricata 7.0.3 run)
+# ------------------------------------------------------------------------------------------
+EVE_SAMPLE = r"""{"timestamp":"2023-11-10T11:03:09.000000+0000","flow_id":1407378579516098,"pcap_cnt":1,"event_type":"dns","src_ip":"10.0.0.124","src_port":53000,"dest_ip":"10.0.0.1","dest_port":53,"proto":"UDP","pkt_src":"wire/pcap","community_id":"1:gzJAhNulxR6TeS6wGvbmeXp0ipo=","dns":{"type":"query","id":1,"rrname":"updates.evil-example.com","rrtype":"A","tx_id":0,"opcode":0}}
+{"timestamp":"2023-11-10T11:03:09.070000+0000","flow_id":1493275201488263,"pcap_cnt":8,"event_type":"alert","src_ip":"10.0.0.124","src_port":50009,"dest_ip":"10.0.0.12","dest_port":8080,"proto":"TCP","pkt_src":"wire/pcap","community_id":"1:MaFgOUME7OqWehxs7hDunkKnpow=","tx_id":0,"alert":{"action":"allowed","gid":1,"signature_id":9000001,"rev":1,"signature":"SLEUTHLINE TEST executable download","category":"","severity":1,"metadata":{"mitre_tactic_name":["Command_And_Control"],"mitre_technique_id":["T1105"]}},"http":{"hostname":"10.0.0.12","http_port":8080,"url":"/pscp.exe","http_user_agent":"Mozilla/5.0","http_content_type":"application/octet-stream","http_method":"GET","protocol":"HTTP/1.1","status":200,"length":242},"app_proto":"http","direction":"to_server","flow":{"pkts_toserver":4,"pkts_toclient":2,"bytes_toserver":289,"bytes_toclient":430,"start":"2023-11-10T11:03:09.020000+0000","src_ip":"10.0.0.124","dest_ip":"10.0.0.12","src_port":50009,"dest_port":8080},"payload_printable":"GET /pscp.exe HTTP/1.1\r\nHost: 10.0.0.12:8080\r\nUser-Agent: Mozilla/5.0\r\n\r\n","stream":1}
+{"timestamp":"2023-11-10T11:03:09.070000+0000","flow_id":1493275201488263,"pcap_cnt":8,"event_type":"http","src_ip":"10.0.0.124","src_port":50009,"dest_ip":"10.0.0.12","dest_port":8080,"proto":"TCP","pkt_src":"wire/pcap","community_id":"1:MaFgOUME7OqWehxs7hDunkKnpow=","tx_id":0,"http":{"hostname":"10.0.0.12","http_port":8080,"url":"/pscp.exe","http_user_agent":"Mozilla/5.0","http_content_type":"application/octet-stream","http_method":"GET","protocol":"HTTP/1.1","status":200,"length":242}}
+{"timestamp":"2023-11-10T11:03:09.090000+0000","flow_id":1493275201488263,"pcap_cnt":10,"event_type":"fileinfo","src_ip":"10.0.0.12","src_port":8080,"dest_ip":"10.0.0.124","dest_port":50009,"proto":"TCP","pkt_src":"wire/pcap","community_id":"1:MaFgOUME7OqWehxs7hDunkKnpow=","http":{"hostname":"10.0.0.12","http_port":8080,"url":"/pscp.exe","http_user_agent":"Mozilla/5.0","http_content_type":"application/octet-stream","http_method":"GET","protocol":"HTTP/1.1","status":200,"length":242},"app_proto":"http","fileinfo":{"filename":"/pscp.exe","magic":"MS-DOS executable, MZ for MS-DOS","gaps":false,"state":"CLOSED","md5":"9d918cc7c01cfe34afcd45ab49f5c905","sha1":"f020099f17e603c89b71f5fbf320389d73e2c2f8","sha256":"2945e1ad4d0e12007a2b52fa64ea2642b4e1754490fbd9581664a5331ff2e2a8","stored":false,"size":242,"tx_id":0}}
+{"timestamp":"2023-11-10T11:03:09.000000+0000","flow_id":1493275201488263,"event_type":"flow","src_ip":"10.0.0.124","src_port":50009,"dest_ip":"10.0.0.12","dest_port":8080,"proto":"TCP","app_proto":"http","flow":{"pkts_toserver":6,"pkts_toclient":3,"bytes_toserver":397,"bytes_toclient":484,"start":"2023-11-10T11:03:09.020000+0000","end":"2023-11-10T11:03:09.100000+0000","age":0,"state":"closed","reason":"shutdown","alerted":true},"community_id":"1:MaFgOUME7OqWehxs7hDunkKnpow=","tcp":{"tcp_flags":"1b","tcp_flags_ts":"1b","tcp_flags_tc":"1b","syn":true,"fin":true,"psh":true,"ack":true,"state":"closed","ts_max_regions":1,"tc_max_regions":1}}
+{"timestamp":"2023-11-10T11:05:00.000000+0000","event_type":"smb","src_ip":"10.0.0.124","src_port":49800,"dest_ip":"10.42.85.10","dest_port":445,"proto":"TCP","smb":{"command":"SMB2_COMMAND_TREE_CONNECT","share":"\\\\DC01\\ADMIN$"}}
+{"timestamp":"2023-11-10T11:06:00.000000+0000","event_type":"flow","src_ip":"10.0.0.124","dest_ip":"8.8.8.8","proto":"ICMP","flow":{"start":"2023-11-10T11:06:00.000000+0000","end":"2023-11-10T11:06:01.000000+0000","state":"established"}}
+{"timestamp":"2023-11-10T11:07:00.000000+0000","event_type":"stats","stats":{"uptime":1}}"""
+
+FAKE_SURICATA = r"""
+import os, sys, yaml
+a = sys.argv[1:]
+cap, conf, logdir = a[a.index("-r") + 1], a[a.index("-c") + 1], a[a.index("-l") + 1]
+assert os.path.isfile(cap) and a[a.index("-k") + 1] == "none", a
+cfg = yaml.safe_load(open(conf, encoding="utf-8").read())
+eve = [o["eve-log"] for o in cfg["outputs"] if "eve-log" in o][0]
+assert eve["enabled"] and eve["filename"] == "eve.jsonl", eve
+os.makedirs(logdir, exist_ok=True)
+open(os.path.join(logdir, "eve.jsonl"), "w").write(os.environ["FAKE_EVE"])
+print("i: pcap: read 1 file, 11 packets")
+"""
+
+MINI_SURICATA_YAML = """%YAML 1.1
+---
+vars:
+  address-groups:
+    HOME_NET: "[10.0.0.0/8]"
+default-rule-path: /var/lib/suricata/rules
+rule-files:
+  - suricata.rules
+classification-file: /etc/suricata/classification.config
+outputs:
+  - fast:
+      enabled: yes
+      filename: fast.log
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert:
+            tagged-packets: yes
+        - http:
+            extended: yes
+        - dns
+        - files:
+            force-magic: no
+  - stats:
+      enabled: yes
+unix-command:
+  enabled: auto
+"""
+
+
+def build_network_case(d: Path):
+    case = d / "case"
+    (case / "raw" / "C").mkdir(parents=True)
+    (case / "pcap").mkdir()
+    cap = case / "pcap" / "lab.pcap"
+    cap.write_bytes(b"\xd4\xc3\xb2\xa1" + b"\x00" * 60)
+    app = d / "suricata"
+    app.mkdir()
+    (app / "suricata.yaml").write_text(MINI_SURICATA_YAML, encoding="utf-8")
+    (app / "classification.config").write_text("config classification: trojan-activity,A Network Trojan was detected,1\n")
+    (app / "suricata.py").write_text(FAKE_SURICATA, encoding="utf-8")
+    rules = d / "rules" / "suricata.rules"
+    rules.parent.mkdir()
+    rules.write_text('alert http any any -> any any (msg:"TEST"; sid:1;)\n')
+    manifest = {"tools": [{"name": "Suricata (network captures)", "key": "Suricata", "status": "OK",
+                           "executables": {"suricata": str(app / "suricata.py"), "suricata_yaml": str(app / "suricata.yaml"),
+                                           "suricata_rules": str(rules)}}]}
+    inv = {"summary": {"collection_root": str(case / "raw")}, "files": []}
+    out = case / "parsed"
+    out.mkdir()
+    ctx = orchestrator.Context(case, inv, manifest, out, [], network.find_captures(case))
+    return case, cap, ctx
+
+
+class TestNetwork(unittest.TestCase):
+    def test_find_captures(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d)
+            self.assertEqual(network.find_captures(case), [])
+            (case / "pcap" / "day2").mkdir(parents=True)
+            for n in ("a.pcap", "day2/b.PCAPNG", "notes.txt"):
+                (case / "pcap" / n).write_bytes(b"x")
+            self.assertEqual(sorted(p.name for p in network.find_captures(case)), ["a.pcap", "b.PCAPNG"])
+
+    def test_write_config(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "suricata.yaml").write_text(MINI_SURICATA_YAML, encoding="utf-8")
+            (d / "classification.config").write_text("x")
+            rules = d / "r" / "et.rules"
+            rules.parent.mkdir()
+            rules.write_text("x")
+            network.write_config(d / "suricata.yaml", d / "out.yaml", rules, d)
+            text = (d / "out.yaml").read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("%YAML 1.1\n---\n"))
+            cfg = yaml.safe_load(text)
+        outs = {next(iter(o)): o[next(iter(o))] for o in cfg["outputs"]}
+        self.assertFalse(outs["fast"]["enabled"])
+        self.assertFalse(outs["stats"]["enabled"])
+        eve = outs["eve-log"]
+        self.assertEqual((eve["enabled"], eve["filename"], eve["community-id"]), (True, "eve.jsonl", True))
+        types = {next(iter(t)) if isinstance(t, dict) else t: t for t in eve["types"]}
+        self.assertEqual(types["files"]["files"]["force-hash"], ["md5", "sha1", "sha256"])
+        self.assertIn("flow", types)
+        self.assertEqual((cfg["default-rule-path"], cfg["rule-files"]), (str(rules.parent), ["et.rules"]))
+        self.assertEqual(cfg["classification-file"], str(d / "classification.config"))
+        self.assertEqual(cfg["pcap-file"]["checksum-checks"], "no")
+        self.assertFalse(cfg["unix-command"]["enabled"])
+
+    def test_split_eve(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "eve.jsonl").write_text(EVE_SAMPLE + "\n", encoding="utf-8")
+            counts = network.split_eve(d / "eve.jsonl", d, "lab.pcap")
+            self.assertEqual(counts, {"alert": 1, "dns": 1, "fileinfo": 1, "flow": 2, "http": 1, "smb": 1})
+            alert = json.loads((d / "eve_alert.jsonl").read_text(encoding="utf-8"))
+            flows = [json.loads(l) for l in (d / "eve_flow.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual((alert["pcap_file"], alert["alert_signature_id"], alert["http_url"]), ("lab.pcap", 9000001, "/pscp.exe"))
+        self.assertEqual(alert["alert_metadata_mitre_technique_id"], '["T1105"]')
+        icmp = next(f for f in flows if f["proto"] == "ICMP")
+        self.assertIsNone(icmp["src_port"])                        # base fields always present
+        self.assertIn("flow_bytes_toserver", icmp)
+
+    def test_entries_in_normalize_map(self):
+        m = json.loads((PIPE / "config" / "normalize_map.json").read_text(encoding="utf-8"))
+        by_id = {s["id"]: s for s in m["sources"]}
+        for e in network.normalize_map_entries():
+            self.assertEqual(by_id.get(e["id"]), e, e["id"])
+        self.assertIn(network.SKIP_RULE, m["skip"])
+        ids = [s["id"] for s in m["sources"]]
+        self.assertGreater(ids.index("suricata_other"), ids.index("suricata_anomaly"))   # catch-all last
+
+    def test_suricata_job_then_normalization(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["FAKE_EVE"] = EVE_SAMPLE + "\n"
+            try:
+                case, cap, ctx = build_network_case(Path(d))
+                job = next(j for j in orchestrator.JOBS if j.id == "suricata")
+                rec = orchestrator.run_job(job, ctx, force=True, dry_run=False)
+            finally:
+                os.environ.pop("FAKE_EVE")
+            self.assertEqual(rec["status"], "ok", rec["steps"])
+            self.assertEqual(rec["inputs"], [str(cap)])
+            out = ctx.out / "suricata"
+            self.assertTrue((out / "lab.pcap" / "raw" / "eve.jsonl").is_file())
+            self.assertIn("suricata/lab.pcap/raw/eve.jsonl", {o["file"].replace("\\", "/") for o in rec["outputs"]})  # raw hashed
+            (out / "_status.json").write_text(json.dumps(rec), encoding="utf-8")
+            self.assertEqual(normalize.main([str(case), "--no-live"]), 0)
+            con = duckdb.connect(str(case / "db" / "case.duckdb"), read_only=True)
+            det = con.execute("SELECT engine, rule_title, level, evidence FROM detections").fetchall()
+            self.assertEqual(det, [("Suricata", "SLEUTHLINE TEST executable download", "high", "lab.pcap")])
+            arts = {r[0] for r in con.execute("SELECT DISTINCT artifact FROM timeline").fetchall()}
+            self.assertTrue({"DNS (Suricata)", "HTTP (Suricata)", "Files transferred (Suricata)", "Network flows (Suricata)",
+                             "Network events (Suricata)"} <= arts, arts)
+            sha = con.execute("SELECT sha256 FROM raw.pcap_files").fetchone()[0]
+            self.assertEqual(sha, hashlib.sha256(cap.read_bytes()).hexdigest().upper())
+            self.assertEqual(con.execute("SELECT count(*) FROM raw.suricata_eve_smb").fetchone()[0], 1)
+            con.close()
+        # Evidence policy: the captures are ONE source, distinct from the disk and the memory
+        net = [{"ref": "suricata/lab.pcap/eve_http.jsonl#1", "artifact": "HTTP (Suricata)", "evidence": "lab.pcap"},
+               {"ref": "suricata/lab.pcap/eve_alert.jsonl#1", "artifact": "Detection Suricata", "evidence": "lab.pcap"}]
+        P = guards.load_policy(None)
+        self.assertEqual(guards.independent_sources(net), ["network"])
+        self.assertEqual(guards.assess("confirmed", net, P, "high")[0], "probable")
+        mem = {"ref": "volatility/windows.netscan.NetScan.jsonl#1", "artifact": "Memory: network connections (netscan)"}
+        self.assertEqual(guards.assess("confirmed", net[:1] + [mem], P, "high")[0], "confirmed")
+
+    def test_config_failure_skips_the_captures(self):
+        with tempfile.TemporaryDirectory() as d:
+            case, cap, ctx = build_network_case(Path(d))
+            ctx.exe["suricata_yaml"] = str(Path(d) / "missing.yaml")
+            (Path(d) / "suricata" / "suricata.yaml").unlink()
+            job = next(j for j in orchestrator.JOBS if j.id == "suricata")
+            rec = orchestrator.run_job(job, ctx, force=True, dry_run=False)
+        self.assertEqual([s["status"] for s in rec["steps"]], ["ok", "failed", "skipped"])
+        self.assertEqual(rec["status"], "partial")
 
 
 # ------------------------------------------------------------------------------------------

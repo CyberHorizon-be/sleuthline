@@ -1,5 +1,5 @@
 {
- "version": "2.1",
+ "version": "2.2",
  "description": "Mapping of parsing outputs -> DuckDB timeline / detections. Source of truth: <repository>\\pipeline\\config\\normalize_map.json. See the README (Normalization) for the format.",
  "defaults": {
   "min_ts": "1980-01-01",
@@ -54,6 +54,10 @@
   {
    "glob": "plaso_*/*.plaso",
    "reason": "intermediate plaso storage (the json_line output is loaded)"
+  },
+  {
+   "glob": "suricata/*/raw/*",
+   "reason": "raw Suricata output (eve.jsonl, suricata.log): loaded split by event type"
   }
  ],
  "sources": [
@@ -4630,6 +4634,265 @@
    "category": "execution",
    "tool": "Volatility 3",
    "times": []
+  },
+  {
+   "id": "pcap_files",
+   "glob": [
+    "suricata/pcap_files.jsonl"
+   ],
+   "artifact": "Network captures",
+   "category": "network",
+   "tool": "Sleuthline",
+   "times": [],
+   "description": [
+    "name",
+    "sha256"
+   ],
+   "note": "Name, size and SHA-256 of every capture, computed before the analysis."
+  },
+  {
+   "id": "suricata_alert",
+   "glob": [
+    "suricata/*/eve_alert.jsonl"
+   ],
+   "artifact": "Suricata",
+   "category": "detection",
+   "tool": "Suricata",
+   "times": [],
+   "detection": {
+    "engine": "Suricata",
+    "ts": "\"timestamp\"",
+    "rule_title": [
+     "alert_signature"
+    ],
+    "rule_id": [
+     "alert_signature_id"
+    ],
+    "level": "CASE CAST(\"alert_severity\" AS VARCHAR) WHEN '1' THEN 'high' WHEN '2' THEN 'medium' WHEN '3' THEN 'low' ELSE 'informational' END",
+    "computer": [
+     "dest_ip"
+    ],
+    "channel": [
+     "app_proto",
+     "proto"
+    ],
+    "event_id": [
+     "alert_signature_id"
+    ],
+    "record_id": [
+     "flow_id"
+    ],
+    "details": "concat_ws(' | ', concat_ws(' ', \"proto\", \"src_ip\" || coalesce(':' || \"src_port\", ''), '->', \"dest_ip\" || coalesce(':' || \"dest_port\", '')), nullif(\"alert_category\", ''), \"community_id\", \"pcap_file\")",
+    "tactics": "concat_ws(' ', \"alert_metadata_mitre_tactic_name\", \"alert_metadata_mitre_technique_id\")",
+    "evidence": [
+     "pcap_file"
+    ]
+   },
+   "note": "Severity 1 = high, 2 = medium, 3 = low (ET Open). The HTTP / DNS / TLS context of the alert is in raw.suricata_alert."
+  },
+  {
+   "tool": "Suricata",
+   "evidence": [
+    "pcap_file"
+   ],
+   "id": "suricata_flow",
+   "glob": [
+    "suricata/*/eve_flow.jsonl"
+   ],
+   "artifact": "Network flows (Suricata)",
+   "category": "network",
+   "times": [
+    {
+     "ts": "\"flow_start\"",
+     "desc": "network flow: start"
+    },
+    {
+     "ts": "\"flow_end\"",
+     "desc": "network flow: end"
+    }
+   ],
+   "path": [
+    "dest_ip"
+   ],
+   "description": "concat_ws(' ', concat_ws(' ', \"proto\", \"src_ip\" || coalesce(':' || \"src_port\", ''), '->', \"dest_ip\" || coalesce(':' || \"dest_port\", '')), \"app_proto\", 'state=' || \"flow_state\", 'bytes=' || \"flow_bytes_toserver\" || '/' || \"flow_bytes_toclient\")"
+  },
+  {
+   "tool": "Suricata",
+   "evidence": [
+    "pcap_file"
+   ],
+   "id": "suricata_dns",
+   "glob": [
+    "suricata/*/eve_dns.jsonl"
+   ],
+   "artifact": "DNS (Suricata)",
+   "category": "network",
+   "times": [
+    {
+     "ts": "\"timestamp\"",
+     "desc": "DNS query / answer"
+    }
+   ],
+   "path": [
+    "dns_rrname",
+    "dns_queries",
+    "dns_query"
+   ],
+   "description": [
+    "dns_type",
+    "dns_rrtype",
+    "dns_rcode",
+    "src_ip",
+    "dest_ip",
+    "dns_answers",
+    "dns_grouped_A",
+    "dns_grouped_CNAME"
+   ]
+  },
+  {
+   "tool": "Suricata",
+   "evidence": [
+    "pcap_file"
+   ],
+   "id": "suricata_http",
+   "glob": [
+    "suricata/*/eve_http.jsonl"
+   ],
+   "artifact": "HTTP (Suricata)",
+   "category": "network",
+   "times": [
+    {
+     "ts": "\"timestamp\"",
+     "desc": "HTTP request"
+    }
+   ],
+   "path": [
+    "http_url",
+    "http_hostname"
+   ],
+   "description": [
+    "http_hostname",
+    "http_http_port",
+    "http_http_method",
+    "http_status",
+    "http_http_user_agent",
+    "http_http_content_type",
+    "http_length",
+    "src_ip",
+    "dest_ip"
+   ]
+  },
+  {
+   "tool": "Suricata",
+   "evidence": [
+    "pcap_file"
+   ],
+   "id": "suricata_tls",
+   "glob": [
+    "suricata/*/eve_tls.jsonl"
+   ],
+   "artifact": "TLS (Suricata)",
+   "category": "network",
+   "times": [
+    {
+     "ts": "\"timestamp\"",
+     "desc": "TLS handshake"
+    }
+   ],
+   "path": [
+    "tls_sni",
+    "dest_ip"
+   ],
+   "description": [
+    "tls_sni",
+    "dest_ip",
+    "dest_port",
+    "tls_version",
+    "tls_subject",
+    "tls_issuerdn",
+    "tls_ja3_hash",
+    "tls_ja3s_hash",
+    "tls_ja4"
+   ]
+  },
+  {
+   "tool": "Suricata",
+   "evidence": [
+    "pcap_file"
+   ],
+   "id": "suricata_fileinfo",
+   "glob": [
+    "suricata/*/eve_fileinfo.jsonl"
+   ],
+   "artifact": "Files transferred (Suricata)",
+   "category": "network",
+   "times": [
+    {
+     "ts": "\"timestamp\"",
+     "desc": "file transferred over the network"
+    }
+   ],
+   "path": [
+    "fileinfo_filename"
+   ],
+   "description": [
+    "app_proto",
+    "http_hostname",
+    "src_ip",
+    "dest_ip",
+    "fileinfo_size",
+    "fileinfo_magic",
+    "fileinfo_sha256",
+    "fileinfo_md5",
+    "fileinfo_state"
+   ]
+  },
+  {
+   "tool": "Suricata",
+   "evidence": [
+    "pcap_file"
+   ],
+   "id": "suricata_anomaly",
+   "glob": [
+    "suricata/*/eve_anomaly.jsonl"
+   ],
+   "artifact": "Network anomalies (Suricata)",
+   "category": "network",
+   "times": [
+    {
+     "ts": "\"timestamp\"",
+     "desc": "protocol anomaly"
+    }
+   ],
+   "description": [
+    "anomaly_type",
+    "anomaly_event",
+    "anomaly_layer",
+    "src_ip",
+    "dest_ip",
+    "app_proto"
+   ]
+  },
+  {
+   "tool": "Suricata",
+   "evidence": [
+    "pcap_file"
+   ],
+   "id": "suricata_other",
+   "glob": [
+    "suricata/*/eve_*.jsonl"
+   ],
+   "artifact": "Network events (Suricata)",
+   "category": "network",
+   "table_per_file": true,
+   "times": [
+    {
+     "ts": "\"timestamp\"",
+     "desc": "network event"
+    }
+   ],
+   "description": "concat_ws(' ', \"event_type\", concat_ws(' ', \"proto\", \"src_ip\" || coalesce(':' || \"src_port\", ''), '->', \"dest_ip\" || coalesce(':' || \"dest_port\", '')), \"app_proto\")",
+   "note": "SMB, RDP, SSH, SMTP, FTP, DHCP, Kerberos, DCERPC, QUIC...: one table per event type."
   }
  ]
 }

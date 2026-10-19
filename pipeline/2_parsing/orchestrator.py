@@ -29,6 +29,8 @@ Usage:
 
 Memory: a memory image placed in <case>\\memory\\ (or given with --memory) is analyzed with
 Volatility 3 by the "volatility" job (memory.py).
+Network: the captures placed in <case>\\pcap\\ (or given with --pcap) are analyzed with Suricata by
+the "suricata" job (network.py).
 """
 from __future__ import annotations
 
@@ -53,6 +55,7 @@ from typing import Callable
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import memory  # noqa: E402
+import network  # noqa: E402
 PIPE = HERE.parent                                   # <root>\pipeline
 ROOT = PIPE.parent                                   # installation root (default C:\Sleuthline)
 DEFAULT_MANIFEST = ROOT / "tools" / "tools-manifest.json"
@@ -94,7 +97,8 @@ DISSECT_EXCLUDED_SENSITIVE = [
 # Context: inventory, manifest, paths
 # --------------------------------------------------------------------------
 class Context:
-    def __init__(self, case: Path, inventory: dict, manifest: dict, out: Path, memory_images: list[Path] | None = None):
+    def __init__(self, case: Path, inventory: dict, manifest: dict, out: Path, memory_images: list[Path] | None = None,
+                 captures: list[Path] | None = None):
         self.case = case
         self.out = out
         self.root = Path(inventory["summary"]["collection_root"])
@@ -106,6 +110,11 @@ class Context:
         for img in self.memory_images:
             self.files_by_art["memory_image"].append({"rel_path": str(img), "size": img.stat().st_size,
                                                       "artifact": "memory_image", "original_path": str(img)})
+        # Network captures (outside the KAPE collection): pseudo-artifact "pcap", absolute paths
+        self.captures = [Path(p) for p in (captures or [])]
+        for cap in self.captures:
+            self.files_by_art["pcap"].append({"rel_path": str(cap), "size": cap.stat().st_size,
+                                              "artifact": "pcap", "original_path": str(cap)})
         self.exe: dict[str, str] = {}
         self.tool_of: dict[str, dict] = {}
         for tool in manifest.get("tools", []):
@@ -744,6 +753,32 @@ def j_volatility(c, out):
     return steps
 
 
+def j_suricata(c, out):
+    """Suricata on the network captures: SHA-256 of the captures, configuration for an offline
+    analysis (from the suricata.yaml shipped with Suricata), then one Suricata run per capture."""
+    exe = c.exe["suricata"]
+    install = Path(exe).parent
+    default_yaml = Path(c.exe["suricata_yaml"]) if c.exe.get("suricata_yaml") else network.find_config_file(install, "suricata.yaml")
+    rules = Path(c.exe["suricata_rules"]) if c.exe.get("suricata_rules") else None
+    config = out / "_suricata.yaml"
+    env = dict(os.environ, PYTHONUTF8="1")
+    steps = [Step([], label="SHA-256 of the captures",
+                  func=lambda: network.hash_captures(c.captures, out / "pcap_files.jsonl"), timeout=network.RUN_TIMEOUT)]
+    if not default_yaml or not Path(default_yaml).is_file():
+        def no_config():
+            raise RuntimeError(f"suricata.yaml not found next to {exe}")
+        steps.append(Step([], label="Suricata configuration", func=no_config))
+    else:
+        steps.append(Step([], label="Suricata configuration (offline analysis)",
+                          func=lambda: network.write_config(Path(default_yaml), config, rules, install)))
+    for cap in c.captures:
+        d = out / network.capture_dir_name(cap, c.captures)
+        cmd = network.suricata_command(exe, cap, config, d / "raw")
+        steps.append(Step(cmd, label=cap.name, timeout=network.RUN_TIMEOUT,
+                          func=(lambda cmd=cmd, d=d, cap=cap: network.run_capture(cmd, d / "raw", d, cap.name, env=env))))
+    return steps
+
+
 JOBS: list[Job] = [
     # --- File system
     Job("mftecmd_mft", "MFTECmd - $MFT", ["ntfs_mft"], ["MFTECmd"], j_mft),
@@ -809,6 +844,9 @@ JOBS: list[Job] = [
     Job("volatility", f"Volatility 3 - memory image ({len(memory.PLUGINS)} plugins, no secrets, no file extraction)",
         ["memory_image"], ["vol"], j_volatility, parallel=memory.PARALLEL, serial_first=2,
         note="Not run: " + ", ".join(memory.EXCLUDED)),
+    # --- Network (captures in <case>\pcap\ or --pcap)
+    Job("suricata", "Suricata - network captures (alerts and protocol metadata)", ["pcap"], ["suricata"], j_suricata,
+        parallel=1, serial_first=2),
 ]
 
 
@@ -1021,11 +1059,11 @@ def run_step(step: Step, log, env) -> dict:
 
 
 def run_steps(job: Job, steps: list[Step], log, env) -> list[dict]:
-    """Runs the steps of a job: in order, or for a job with parallel > 1, the first serial_first steps
-    in order then the others `parallel` at a time (each step logs into a buffer copied to _run.log
-    when it ends, so that the log is not interleaved). If a serial step fails, the others are not run."""
+    """Runs the steps of a job in order. A job with serial_first > 0 runs its first serial_first steps,
+    then the others only if those succeeded, `parallel` at a time when parallel > 1 (each step then logs
+    into a buffer copied to _run.log when it ends, so that the log is not interleaved)."""
     recs: list[dict] = []
-    n_serial = job.serial_first if job.parallel > 1 else len(steps)
+    n_serial = job.serial_first or len(steps)
     for i, st in enumerate(steps[:n_serial], 1):
         PROGRESS[job.id].update(step=i, label=st.label or (Path(st.cmd[0]).stem if st.cmd else ""))
         recs.append(run_step(st, log, env))
@@ -1037,6 +1075,11 @@ def run_steps(job: Job, steps: list[Step], log, env) -> list[dict]:
         for st in rest:
             recs.append({"label": st.label, "cmd": st.cmd, "status": "skipped", "returncode": None, "duration_s": 0,
                          "_text": "", "note": "not run: a preliminary step failed"})
+        return recs
+    if job.parallel <= 1:
+        for i, st in enumerate(rest, n_serial + 1):
+            PROGRESS[job.id].update(step=i, label=st.label or (Path(st.cmd[0]).stem if st.cmd else ""))
+            recs.append(run_step(st, log, env))
         return recs
 
     def one(st: Step):
@@ -1152,7 +1195,7 @@ def protect_collection(ctx: Context) -> int:
     To delete a case folder later: attrib -r /s /d <case>\\* (or remove the attribute in Explorer)."""
     n = 0
     paths = [ctx.root.joinpath(*r["rel_path"].split("\\")) for art, recs in ctx.files_by_art.items()
-             if art != "memory_image" for r in recs] + list(ctx.memory_images)
+             if art not in ("memory_image", "pcap") for r in recs] + list(ctx.memory_images) + list(ctx.captures)
     for p in paths:
         try:
             if os.access(p, os.W_OK):
@@ -1237,6 +1280,8 @@ def main(argv=None):
     ap.add_argument("--no-verify", action="store_true", help="Do not re-check the SHA-1 of the collection after parsing")
     ap.add_argument("--memory", type=Path, action="append",
                     help="Memory image of the machine (default: the image found in <case>\\memory\\)")
+    ap.add_argument("--pcap", type=Path, action="append",
+                    help="Network capture (repeatable; default: the captures found in <case>\\pcap\\)")
     args = ap.parse_args(argv)
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8-sig")) if args.manifest.exists() else {"tools": []}
@@ -1250,9 +1295,15 @@ def main(argv=None):
     if len(images) > 1:
         raise SystemExit("Several memory images: " + ", ".join(p.name for p in images)
                          + ". Keep one per case, or choose it with --memory <path>.")
-    ctx = Context(args.case, inventory, manifest, out, images)
+    captures = network.find_captures(args.case, args.pcap)
+    missing_cap = [str(p) for p in captures if not p.is_file()]
+    if missing_cap:
+        raise SystemExit(f"Network capture not found: {', '.join(missing_cap)}")
+    ctx = Context(args.case, inventory, manifest, out, images, captures)
     if images:
         print(f"Memory image: {images[0]} ({images[0].stat().st_size / 1e9:.1f} GB)")
+    if captures:
+        print(f"Network captures: {len(captures)} file(s), {sum(p.stat().st_size for p in captures) / 1e9:.2f} GB")
 
     jobs = JOBS
     if args.only:
