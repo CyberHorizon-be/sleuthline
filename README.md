@@ -18,6 +18,8 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization
 - **Any model.** Claude (default), any OpenAI-compatible API, or a local model (Ollama, LM Studio, vLLM) so that no data leaves the VM.
 - **Reproducible.** Tool versions locked in `install\tools-lock.json`, pipeline version (git commit) recorded in the database and the report, tests and regression references.
 
+**Tested on** [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1), a public exercise (Windows 10 workstation compromised with a Meterpreter agent), in a blind run with only the 8 questions of the exercise: **about 50 minutes** from the KAPE collection to the Word report (parsing 27 min, normalization 1 min, analysis 22 min) and **about 7 USD** of Claude Opus 5.5 API usage. The agent answered all 8 questions with their evidence (see [the walkthrough](#analyzing-a-case-step-by-step)).
+
 > Sleuthline assists an analyst; it is not an automated expert. The report must be reviewed and validated by a qualified analyst before any distribution or decision (see [Limitations and responsibility](#limitations-and-responsibility)).
 
 ## Requirements
@@ -285,7 +287,22 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze C:\Sleuthline\cases\test01
 
 The only paid step. The agent works through the 12 steps of `PLAYBOOK.md` (context, detections, execution, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
 
-On Lab 1, the agent identified the malicious executable, its masquerading, the Defender tampering and the reconnaissance commands during the first two steps, with no IOC given. The system prompt and the conversation of each step are read back from the prompt cache: after 25 model calls, 92 % of the input tokens came from the cache.
+On Lab 1: **22 minutes** for the 12 steps, 153 model calls, 9.0 million input tokens of which 93 % read back from the prompt cache, 124 000 output tokens: **about 7.2 USD** at the Claude Opus 5.5 list prices (cache read 0.20, cache write 5, output 20 USD per million tokens). The exact amount is shown per key in the Claude Console.
+
+What the agent found with no IOC given, in its own answers to the questions of the exercise:
+
+| Lab question | Agent's answer |
+|---|---|
+| Malicious executable | `C:\Payloads\pscp.exe`, a Meterpreter payload downloaded from `http://10.0.0.12:8080/pscp.exe` (Defender: `Trojan:Win64/Meterpreter.E`), run at 11:03:09 UTC from an elevated PowerShell |
+| Migrated to | A new `explorer.exe` (PID 7324) started by pscp.exe and injected with a remote thread (Sysmon 1 and 8) |
+| Situational awareness commands | `tracert`, `quser`, `tasklist`, `netstat -ntb`, `whoami /user`, `net user administrator`, with times and parent processes |
+| IP and port | `10.0.0.12`, TCP `8080` |
+| Other weird processes | `C:\Payloads\test.exe` and `C:\Users\medmondson\1.exe`, same size as the payload, downloaded but with no evidence of execution |
+| Process chain | `powershell.exe` (1088) → `pscp.exe` (2196) → `explorer.exe` (7324) → `cmd.exe` shells → discovery commands, linked by ProcessGuid / ParentProcessGuid |
+| Masquerading as | PuTTY PSCP (OriginalFileName `PSCP`, product "PuTTY suite") |
+| Hashes | MD5, SHA256 and IMPHASH of `pscp.exe` from Sysmon |
+
+Every answer cites the records it relies on, and each critical or high finding was kept as `confirmed` only with two independent sources. The report also lists what was **not** found (persistence, lateral movement, exfiltration) and why.
 
 ## Usage
 
