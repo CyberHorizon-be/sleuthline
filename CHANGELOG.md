@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.2 (2026-10-19)
 
 - Docs: new README walkthrough *Analyzing a case, step by step*: based on a real run on Threat Hunting Lab 1: per-window script permission, API key setup and `check`, each step with its duration and what to look at, the guidance file in detail with the Lab 1 example.
 - **Fix: Claude API with Claude 5.5 models.** The analysis had only been run through the mock provider and could not work against the real API:
