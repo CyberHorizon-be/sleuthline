@@ -30,28 +30,52 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization
 - PowerShell started **as administrator**
 - KAPE (optional, only to collect): download it yourself from Kroll and drop `kape.zip` in `install\`
 
-## Quick start
+## How it works, and how to run it
+
+**How it works.** Four commands, run one after the other on a case folder:
+
+| Step | Command | What it does | What it produces |
+|---|---|---|---|
+| 1 | `inventory` | Lists every file of the KAPE collection, finds the tool that parses it, checks its integrity against the KAPE SHA-1 | `inventory\coverage.md` |
+| 2 | `parse` | Runs the forensic tools on the collection, read-only | `parsed\` (one folder per tool), `parsed\run_summary.md` |
+| 3 | `normalize` | Loads every output into one DuckDB database with a UTC timeline and the detections | `db\case.duckdb`, `db\normalize_report.md` |
+| | *pause* | You tell the agent what you know: context, questions, IOCs | `analysis\guidance.txt` |
+| 4 | `analyze` | The agent investigates following the playbook, answers your questions, every finding backed by database records | `analysis\report_<case>_<date>.docx` |
+
+**How to run it.** Every command, from the clone to the report, as run on [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1). In a PowerShell window **opened as administrator**:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass -Force
+# --- Installation (once) ------------------------------------------------------------------
+Set-ExecutionPolicy -Scope Process Bypass -Force          # allows the scripts in this window only
 git clone https://github.com/CyberHorizon-be/sleuthline.git C:\Sleuthline-setup
 cd C:\Sleuthline-setup
-.\Install-All.ps1 -AddDefenderExclusion -EnableLongPaths     # 10 to 20 minutes
+.\Install-All.ps1 -AddDefenderExclusion -EnableLongPaths  # about 6 minutes
+
+# --- API key (once) -------------------------------------------------------------------------
+notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_KEY = sk-ant-...  (Ctrl+S)
+.\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
+
+# --- Checks ---------------------------------------------------------------------------------
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 37 tests, OK
+C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
+
+# --- A case ---------------------------------------------------------------------------------
+#   copy the KAPE collection (CopyLog + C\ folder) to C:\Sleuthline\cases\test01\
+#   in a new PowerShell window, run Set-ExecutionPolicy -Scope Process Bypass -Force again
+C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test01
+C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test01   # about 30 minutes
+C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test01   # about 1 minute
+
+#   pause: create the guidance file and write the context and the questions
+New-Item -ItemType Directory -Force C:\Sleuthline\cases\test01\analysis | Out-Null
+Copy-Item C:\Sleuthline\pipeline\config\guidance_template.txt C:\Sleuthline\cases\test01\analysis\guidance.txt
+notepad C:\Sleuthline\cases\test01\analysis\guidance.txt
+
+C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test01   # about 22 minutes, 7.23 USD
+#   -> C:\Sleuthline\cases\test01\analysis\report_test01_<date>.docx
 ```
 
-Then set up the API key once and analyze a case step by step: see **[Analyzing a case, step by step](#analyzing-a-case-step-by-step)**. In short:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass -Force                      # in every new PowerShell window
-C:\Sleuthline\pipeline\sleuthline.ps1 check                           # API key and model OK?
-C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\<case>
-C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\<case>
-C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\<case>
-#   pause: review the results, fill in <case>\analysis\guidance.txt (context, questions, IOCs)
-C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\<case>
-```
-
-The report is written to `<case>\analysis\report_<case>_<date>.docx`.
+Each step, what to look at between them and how to fill in the guidance file: **[Analyzing a case, step by step](#analyzing-a-case-step-by-step)**.
 
 ## Repository layout
 
