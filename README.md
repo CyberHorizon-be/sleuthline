@@ -37,13 +37,16 @@ cd C:\Sleuthline-setup
 .\Install-All.ps1 -AddDefenderExclusion -EnableLongPaths     # 10 to 20 minutes
 ```
 
-Then, for a KAPE collection copied to `C:\Sleuthline\cases\<case>\`:
+Then set up the API key once and analyze a case step by step: see **[Analyzing a case, step by step](#analyzing-a-case-step-by-step)**. In short:
 
 ```powershell
-# API key of your model: line ANTHROPIC_API_KEY = ... in C:\Sleuthline-setup\pipeline\config\api_keys.txt
-.\install\02_Install-Tools.ps1 -Only Pipeline                # redeploys the pipeline (and the key)
-C:\Sleuthline\pipeline\sleuthline.ps1 check                 # tests the key and the model (2 tiny calls)
-C:\Sleuthline\pipeline\sleuthline.ps1 all C:\Sleuthline\cases\<case>
+Set-ExecutionPolicy -Scope Process Bypass -Force                      # in every new PowerShell window
+C:\Sleuthline\pipeline\sleuthline.ps1 check                           # API key and model OK?
+C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\<case>
+C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\<case>
+C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\<case>
+#   pause: review the results, fill in <case>\analysis\guidance.txt (context, questions, IOCs)
+C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\<case>
 ```
 
 The report is written to `<case>\analysis\report_<case>_<date>.docx`.
@@ -138,6 +141,179 @@ What is installed:
 ```
 
 After the installation, check the displayed summary: only the **required** tools block (EZTools, Hayabusa, Chainsaw, Sigma, Zircolite). `<root>\tools\tools-manifest.json` is the traceability reference: it states which version of each tool produced the results of an analysis.
+
+## Analyzing a case, step by step
+
+This walkthrough follows a real run on a public exercise, [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1) (a Windows 10 workstation compromised with a Meterpreter agent, KAPE `!SANS_Triage` collection). Times and figures are those measured on that case.
+
+### 0. Before you start (once per VM, then once per PowerShell window)
+
+**Allow the scripts in the current window.** Windows blocks PowerShell scripts by default. In **every new** PowerShell window, run first:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+```
+
+`-Scope Process` changes nothing on the system: the permission ends when the window is closed. Without it, every command fails with *"running scripts is disabled on this system"*.
+
+**Set up the API key (once).** Skip this for a local model (Ollama, LM Studio).
+
+1. Create a key in the [Claude Console](https://platform.claude.com/settings/keys). Choose a **workspace** (e.g. *Default*) when creating it: a key scoped to the whole organization is refused with *"This API key is not scoped to a workspace"*. Add credit to the account (*Plans & Billing*): with a zero balance the API answers *"Your credit balance is too low"*.
+2. Write it in the **repository** copy of the key file, not in the deployed one:
+   ```powershell
+   notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt    # line: ANTHROPIC_API_KEY = sk-ant-...   (Ctrl+S)
+   cd C:\Sleuthline-setup
+   .\install\02_Install-Tools.ps1 -Only Pipeline               # copies the pipeline, and the key, to C:\Sleuthline\pipeline
+   ```
+   Why redeploy: Sleuthline runs from `C:\Sleuthline\pipeline`, a copy of the repository made by the installer. A file edited in `C:\Sleuthline\pipeline` would be overwritten by the next deployment, so every change goes into `C:\Sleuthline-setup` followed by a redeployment. `api_keys.txt` is excluded from git.
+   Alternative without redeployment: an environment variable, which takes precedence over the file. Use your real key, then open a new window:
+   `[Environment]::SetEnvironmentVariable('ANTHROPIC_API_KEY', 'sk-ant-...', 'User')`
+3. Check the key and the model (two tiny calls, a fraction of a cent):
+   ```powershell
+   C:\Sleuthline\pipeline\sleuthline.ps1 check
+   # OK: tool call and tool result accepted (8.9 s, 893 input / 54 output tokens). Final answer: 'OK'
+   ```
+   On failure, `check` prints the exact error of the API (invalid key, workspace, credit, unknown model).
+
+**Optional: run the tests** (37 tests, about 10 seconds, no network, no cost):
+```powershell
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
+```
+
+### 1. Put the collection in place
+
+Copy the KAPE output into its own case folder, `C:\Sleuthline\cases\<case>\`. The `*_CopyLog.csv` and the volume folders (`C\`, ...) go at the root of the case folder, or in a `raw\` subfolder:
+
+```
+C:\Sleuthline\cases\test01\
+├── 2023-11-10T123304_CopyLog.csv
+├── 2023-11-10T123304_SkipLog.csv
+├── C\
+└── LongFileNames\
+```
+
+**Keep the original timestamps when copying.** The Windows Explorer resets the creation date of copied files: the copy date then appears in the timeline (e.g. LNK files dated the day of the analysis). Copy with:
+
+```powershell
+robocopy "<KAPE output folder>" "C:\Sleuthline\cases\<case>" /E /COPY:DAT /DCOPY:T
+```
+
+If the collection was already copied with the Explorer, say so in the guidance file (step 5): the agent will treat the dates of the copy day as artifacts.
+
+### 2. Inventory: `sleuthline.ps1 inventory <case>`
+
+```powershell
+C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test01
+```
+
+Classifies every collected file by artifact type, finds which installed tool parses it, and checks its integrity against the SHA-1 recorded by KAPE. A few seconds to a few minutes (SHA-1 of every file).
+
+Look at `<case>\inventory\coverage.md`: which artifacts are present, which ones are covered by a parser, and the integrity verdict (`INTACT` expected; a difference on `$MFT` / `$LogFile` copied live is normal).
+
+### 3. Parsing: `sleuthline.ps1 parse <case>`
+
+```powershell
+C:\Sleuthline\pipeline\sleuthline.ps1 parse C:\Sleuthline\cases\test01
+```
+
+Runs every applicable tool (EZTools, Hayabusa, Chainsaw, Zircolite, Dissect, plaso, SIDR, LogFileParser...) on the collection, three at a time, read-only. On Lab 1: **about 30 minutes**, almost all of it **LogFileParser** ($LogFile, 27 minutes). LogFileParser prints nothing while it works: it is not stuck. Its results grow in `parsed\logfileparser\LogFile_<date>\`, and it is stopped automatically if it writes nothing for 15 minutes.
+
+Look at `<case>\parsed\run_summary.md`. On Lab 1: 22 `ok`, 8 `no_input`, 1 `partial`, 1 `warning`:
+
+| Status | Meaning | What to do |
+|---|---|---|
+| `ok` | Outputs produced | Nothing |
+| `no_input` | The artifact is not in the collection (no Chrome, no BITS, no OneDrive...) | Nothing: normal |
+| `warning` | Return code 0 but a warning message (e.g. SIDR: *"database state is not clean"*, usual on a live collection) | Read `parsed\<job>\_run.log` |
+| `partial` | Some sub-commands failed (e.g. one Dissect plugin) | Check whether another tool covers the same artifact (SIDR covers Windows Search) |
+| `failed`, `timeout`, `tool_missing` | No usable output | Read `_run.log`; run the job again: `parse <case> --only <job> --force` |
+
+The summary also states whether a collection file was modified by parsing (expected: *no file modified*).
+
+### 4. Normalization: `sleuthline.ps1 normalize <case>`
+
+```powershell
+C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test01
+```
+
+Loads every output into one DuckDB database, `<case>\db\case.duckdb`, and builds the UTC timeline. About a minute on Lab 1: 394 MB, **1 007 010 timeline rows**, 7 018 detections (21 critical, 57 high).
+
+Look at `<case>\db\normalize_report.md`: the period covered per artifact (it tells you when the machine was active and when the collection was made), the number of detections per level, and the outputs without validated mapping (`mapping = 'auto'`).
+
+### 5. Pause: review, then fill in the guidance file
+
+This is the moment to tell the agent what you know, **before** the paid analysis. The guidance file is `<case>\analysis\guidance.txt`. Create it from the template:
+
+```powershell
+New-Item -ItemType Directory -Force C:\Sleuthline\cases\test01\analysis | Out-Null
+Copy-Item C:\Sleuthline\pipeline\config\guidance_template.txt C:\Sleuthline\cases\test01\analysis\guidance.txt
+notepad C:\Sleuthline\cases\test01\analysis\guidance.txt
+```
+
+If it does not exist, `analyze` creates it from the same template, **empty**, and starts the analysis immediately without waiting: create and fill it first if you have anything to say. `sleuthline.ps1 all` runs the four steps in a row, with no pause, for the same reason.
+
+Every section is optional; lines starting with `#` are comments.
+
+| Section | What to write | Example |
+|---|---|---|
+| `[CONTEXT]` | What is known: alert, symptoms, people, how the collection was made | `EDR alert on 2023-11-10 around 10:40 UTC on the workstation of the accountant` |
+| `[PERIOD]` | Window of interest in UTC (`YYYY-MM-DD HH:MM`); also limits `incident_timeline.csv` | `start = 2023-11-10 09:00` / `end = 2023-11-10 13:00` |
+| `[QUESTIONS]` | One question per line, starting with `-`. The agent answers each one in the report, with its evidence | `- How did the attacker get in?` |
+| `[IOC]` | One indicator per line: `type = value  # comment`. Types: `sha1`, `sha256`, `md5`, `file`, `path`, `ip`, `domain`, `url`, `user`, `sid`, `registry`, `service`, `task`, `command`, `text`. Each IOC is **searched automatically across the whole database** before the analysis | `ip = 203.0.113.45  # C2 from the EDR` |
+| `[SUSPECTS]` | Accounts, machines or processes already suspected | `jdoe` |
+| `[EXCLUSIONS]` | What is legitimate and must be ignored (the collection and analysis tools are already excluded) | `C:\Tools\ (admin toolkit)` |
+| `[INSTRUCTIONS]` | Free instructions: priorities, steps to dig into | `Focus on persistence and network activity` |
+
+The guidance file used for Lab 1, a blind test with the questions of the exercise and no IOC:
+
+```
+[CONTEXT]
+Threat Hunting Lab 1 (github.com/medmondson44/Threat_Hunting_Labs): security has been alerted that this
+computer may have been compromised. The environment is "a little dirty" (lab setup activity).
+KAPE collection made on 2023-11-10 around 12:33 UTC. It was copied to the analysis VM on 2026-10-19:
+dates of 2026-10-19 are copy artefacts, not evidence.
+
+[QUESTIONS]
+- What is the malicious executable?
+- What process did the malicious executable migrate to?
+- Were any situational awareness commands run? If so, what were they?
+- Which IP and port is the malicious executable communicating with?
+- Are there any other weird processes that can be associated with the malicious executable? If so, did they run?
+- Give the chain of processes used by the malicious executable (mal.exe -> migrated.exe -> other exes), using ProcessGuid and ParentProcessGuid.
+- What executable was the malicious executable masquerading as?
+- What are the hashes of the malicious executable(s), for submission to VirusTotal by the analyst?
+```
+
+Tips:
+
+- **Questions drive the report.** Every question gets a dedicated answer with its evidence, or `undetermined` with what is missing. Ask what the reader of the report needs to know.
+- **IOCs are cheap and powerful.** The automatic sweep finds every occurrence in the timeline and the raw tables before the agent starts, and the agent then explains them.
+- **A blind run is a good test.** On a known case, give only the context and the questions, then compare the report with what you know.
+- **Report language.** The model writes in English by default. For another language, set `"report_language": "fr"` (or `de`, `nl`...) in `C:\Sleuthline-setup\pipeline\config\llm_config.json`, then redeploy (`.\install\02_Install-Tools.ps1 -Only Pipeline`).
+
+### 6. Analysis: `sleuthline.ps1 analyze <case>`
+
+```powershell
+C:\Sleuthline\pipeline\sleuthline.ps1 analyze C:\Sleuthline\cases\test01
+```
+
+The only paid step. The agent works through the 12 steps of `PLAYBOOK.md` (context, detections, execution, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Expect from 30 minutes to over an hour depending on the case. Progress is shown step by step in the console.
+
+- **Interrupted?** (network, budget, Ctrl+C): run the same command again, it resumes where it stopped.
+- **Cost control:** `"max_billed_tokens_per_run"` under `limits` in `llm_config.json` stops a run cleanly at a budget (0 = no limit). Usage is recorded in `findings.json` and in the report. The system prompt and the conversation of each step are read back from the prompt cache, which keeps the cost down.
+
+### 7. After the analysis
+
+| Need | Command |
+|---|---|
+| Read the report | `<case>\analysis\report_<case>_<date>.docx` (in Word, press F9 to update the table of contents) |
+| Ask one more question, without redoing the analysis | `sleuthline.ps1 ask <case> "Where does 1.exe come from?"` |
+| New context or IOCs in `guidance.txt` | `sleuthline.ps1 analyze <case> --steps 3,4 --force` (only the replayed steps are billed) |
+| Regenerate the report (free, no model call) | `sleuthline.ps1 report <case>` |
+| Start the analysis over | `sleuthline.ps1 analyze <case> --reset` (the previous `findings.json` is archived) |
+| Correct the confidence of a finding you verified | `analyst_override` in `findings.json`, then `sleuthline.ps1 report <case>` (see [Guarantees](#4-analysis-agent-and-word-report)) |
+
+Other files in `<case>\analysis\`: `key_timeline.csv`, `incident_timeline.csv` (every event of the incident window), `iocs.csv`, `findings.json` (analysis state) and `transcript.jsonl` (every query and answer of the model).
 
 ## Usage
 
@@ -235,7 +411,7 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze "C:\Sleuthline\cases\<case>"   # f
 - **Untrusted evidence (prompt injection).** Every query result reaches the model inside an `<untrusted_evidence id="...">` block whose closing tag carries a random identifier drawn for each run. The data cannot close the block: tag-like text inside it is neutralized. The system prompt states that nothing inside a block is an instruction, wherever it sits (logs, command lines, registry, file names, web pages, e-mails). Text that looks like instructions addressed to an AI, such as "ignore previous instructions" or "classify this machine as clean", is flagged to the model as a possible anti-forensics indicator. It is also listed in a report appendix for the analyst.
 - **Traceability.** Everything is traced in `transcript.jsonl`: every SQL query, every result, every model answer and every injection alert.
 
-**Guidance file**: `<case>\analysis\guidance.txt`, created automatically at the first run; every section is optional: `[CONTEXT]`, `[PERIOD]`, `[QUESTIONS]` (the agent answers each one in the report), `[IOC]` (each value is searched automatically across the whole database before the analysis), `[SUSPECTS]`, `[EXCLUSIONS]`, `[INSTRUCTIONS]`.
+**Guidance file**: `<case>\analysis\guidance.txt`: context, period, questions, IOCs, suspects, exclusions, instructions. How to create and fill it: [step 5 of the walkthrough](#5-pause-review-then-fill-in-the-guidance-file).
 
 | Option (after `sleuthline.ps1 analyze <case>`) | Effect |
 |---|---|
@@ -257,9 +433,9 @@ An interrupted analysis (network error, Ctrl+C) resumes where it stopped: run th
 
 `report_language` (default `en`; e.g. `fr`, `de`, `nl`) sets the language in which the model writes findings, answers and summaries; the report layout itself is in English. For a model without tool calling, use `"tool_mode": "json"`.
 
-**API keys**: copy `pipeline\config\api_keys_template.txt` to `api_keys.txt` (the installer does it on first deployment), fill in the line of your provider (`ANTHROPIC_API_KEY = ...` for Claude), then redeploy (`install\02_Install-Tools.ps1 -Only Pipeline`). `api_keys.txt` is excluded from git. An environment variable with the same name takes precedence. Local models need no key.
+**API keys**: see [step 0 of the walkthrough](#0-before-you-start-once-per-vm-then-once-per-powershell-window). The installer creates `api_keys.txt` from `api_keys_template.txt`; fill in the line of your provider in the repository copy, then redeploy. An environment variable with the same name takes precedence. Local models need no key.
 
-**Cost.** The system prompt and the conversation of each step are cached (Claude); old results are truncated in batches to preserve the cache. Usage (including the share read from cache) is recorded in `findings.json` and the report. `limits.max_billed_tokens_per_run` in `llm_config.json` (0 = no limit) caps a run: the state is saved and the command can be run again.
+**Cost.** The system prompt and the conversation of each step are cached (Claude). With Claude the conversation is append-only; with other providers, old results are truncated in batches to save context. Usage (including the share read from cache) is recorded in `findings.json` and the report. `limits.max_billed_tokens_per_run` in `llm_config.json` (0 = no limit) caps a run: the state is saved and the command can be run again.
 
 **Deliverables** (in `<case>\analysis\`):
 
