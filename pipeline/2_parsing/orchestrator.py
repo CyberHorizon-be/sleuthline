@@ -25,12 +25,17 @@ Usage:
   python orchestrator.py C:\\Sleuthline\\cases\\test01 --list
   python orchestrator.py C:\\Sleuthline\\cases\\test01 --only hayabusa,mftecmd_mft --force
   python orchestrator.py C:\\Sleuthline\\cases\\test01 --dry-run
+  python orchestrator.py C:\\Sleuthline\\cases\\test01 --memory D:\\dumps\\host.raw
+
+Memory: a memory image placed in <case>\\memory\\ (or given with --memory) is analyzed with
+Volatility 3 by the "volatility" job (memory.py).
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -40,12 +45,14 @@ import subprocess
 import sys
 import threading
 from collections import defaultdict
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import memory  # noqa: E402
 PIPE = HERE.parent                                   # <root>\pipeline
 ROOT = PIPE.parent                                   # installation root (default C:\Sleuthline)
 DEFAULT_MANIFEST = ROOT / "tools" / "tools-manifest.json"
@@ -87,13 +94,18 @@ DISSECT_EXCLUDED_SENSITIVE = [
 # Context: inventory, manifest, paths
 # --------------------------------------------------------------------------
 class Context:
-    def __init__(self, case: Path, inventory: dict, manifest: dict, out: Path):
+    def __init__(self, case: Path, inventory: dict, manifest: dict, out: Path, memory_images: list[Path] | None = None):
         self.case = case
         self.out = out
         self.root = Path(inventory["summary"]["collection_root"])
         self.files_by_art: dict[str, list[dict]] = defaultdict(list)
         for f in inventory["files"]:
             self.files_by_art[f["artifact"]].append(f)
+        # Memory image (outside the KAPE collection): pseudo-artifact "memory_image", absolute path
+        self.memory_images = [Path(p) for p in (memory_images or [])]
+        for img in self.memory_images:
+            self.files_by_art["memory_image"].append({"rel_path": str(img), "size": img.stat().st_size,
+                                                      "artifact": "memory_image", "original_path": str(img)})
         self.exe: dict[str, str] = {}
         self.tool_of: dict[str, dict] = {}
         for tool in manifest.get("tools", []):
@@ -169,6 +181,9 @@ class Job:
     warn_patterns: list[str] = field(default_factory=list)
     # Real progress (0..1) read from the tool outputs while it runs, when possible
     progress: Callable[[Context, Path], float | None] | None = None
+    # Steps after the first serial_first ones run `parallel` at a time (Volatility plugins)
+    parallel: int = 1
+    serial_first: int = 0
 
 
 def dedupe(paths) -> list[Path]:
@@ -710,6 +725,25 @@ def j_dissect(c, out):
                  stdout_file=out / f"{plugin}.jsonl", label=plugin, timeout=3600) for plugin in DISSECT_PLUGINS]
 
 
+def j_volatility(c, out):
+    """Volatility 3 on the memory image: SHA-256 of the image, windows.info (identifies the kernel and
+    downloads its symbols), then the plugins of memory.PLUGINS in parallel."""
+    image = c.memory_images[0]
+    vol = c.exe["vol"]
+    voldir = ROOT / "tools" / "volatility"
+    symbols, cache = voldir / "symbols", voldir / "cache"
+    for d in (symbols, cache):
+        d.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+    steps = [Step([], label="SHA-256 of the memory image",
+                  func=lambda: memory.hash_image(image, out / "memory_image.jsonl"), timeout=memory.PLUGIN_TIMEOUT)]
+    for p in memory.PLUGINS:
+        cmd = memory.vol_command(vol, image, p.name, symbols, cache)
+        steps.append(Step(cmd, label=p.name, timeout=memory.PLUGIN_TIMEOUT,
+                          func=(lambda cmd=cmd, name=p.name: memory.run_plugin(cmd, out / f"{name}.jsonl", env=env))))
+    return steps
+
+
 JOBS: list[Job] = [
     # --- File system
     Job("mftecmd_mft", "MFTECmd - $MFT", ["ntfs_mft"], ["MFTECmd"], j_mft),
@@ -771,6 +805,10 @@ JOBS: list[Job] = [
     # --- Dissect (WebCache, tasks, Defender, WMI, PowerShell, WER, registry...)
     Job("dissect", "Dissect - Windows plugins (no secrets)", ["evtx", "reg_system", "reg_software"], ["dissect"], j_dissect,
         note="Sensitive plugins excluded: " + ", ".join(DISSECT_EXCLUDED_SENSITIVE)),
+    # --- Memory (image in <case>\memory\ or --memory)
+    Job("volatility", f"Volatility 3 - memory image ({len(memory.PLUGINS)} plugins, no secrets, no file extraction)",
+        ["memory_image"], ["vol"], j_volatility, parallel=memory.PARALLEL, serial_first=2,
+        note="Not run: " + ", ".join(memory.EXCLUDED)),
 ]
 
 
@@ -924,7 +962,8 @@ def run_watched(step: Step, env) -> tuple[str, int | None, str]:
 
 def run_step(step: Step, log, env) -> dict:
     started = dt.datetime.now(dt.timezone.utc)
-    shown = step.label if step.func else subprocess.list2cmdline(step.cmd)
+    shown = (f"{step.label}: {subprocess.list2cmdline(step.cmd)}" if step.cmd else step.label) if step.func \
+        else subprocess.list2cmdline(step.cmd)
     log.write(f"\n$ {shown}\n  (cwd={step.cwd or ''})\n")
     log.flush()
     rec = {"label": step.label, "cmd": step.cmd, "cwd": str(step.cwd) if step.cwd else None,
@@ -981,6 +1020,45 @@ def run_step(step: Step, log, env) -> dict:
     return rec
 
 
+def run_steps(job: Job, steps: list[Step], log, env) -> list[dict]:
+    """Runs the steps of a job: in order, or for a job with parallel > 1, the first serial_first steps
+    in order then the others `parallel` at a time (each step logs into a buffer copied to _run.log
+    when it ends, so that the log is not interleaved). If a serial step fails, the others are not run."""
+    recs: list[dict] = []
+    n_serial = job.serial_first if job.parallel > 1 else len(steps)
+    for i, st in enumerate(steps[:n_serial], 1):
+        PROGRESS[job.id].update(step=i, label=st.label or (Path(st.cmd[0]).stem if st.cmd else ""))
+        recs.append(run_step(st, log, env))
+    rest = steps[n_serial:]
+    if not rest:
+        return recs
+    if any(r["status"] not in ("ok", "warning") for r in recs):
+        log.write(f"\n!! A preliminary step failed: the {len(rest)} other step(s) are not run\n")
+        for st in rest:
+            recs.append({"label": st.label, "cmd": st.cmd, "status": "skipped", "returncode": None, "duration_s": 0,
+                         "_text": "", "note": "not run: a preliminary step failed"})
+        return recs
+
+    def one(st: Step):
+        buf = io.StringIO()
+        rec = run_step(st, buf, env)
+        return rec, buf.getvalue()
+
+    done = 0
+    results: dict[int, dict] = {}
+    with ThreadPoolExecutor(max_workers=job.parallel) as pool:
+        futs = {pool.submit(one, st): k for k, st in enumerate(rest)}
+        for fut in as_completed(futs):
+            rec, text = fut.result()
+            results[futs[fut]] = rec
+            done += 1
+            log.write(text)
+            log.flush()
+            PROGRESS[job.id].update(step=n_serial + done, label=rec.get("label") or "")
+    recs.extend(results[k] for k in range(len(rest)))
+    return recs
+
+
 def run_job(job: Job, ctx: Context, force: bool, dry_run: bool) -> dict:
     out = ctx.out / job.id
     status_file = out / "_status.json"
@@ -1025,9 +1103,7 @@ def run_job(job: Job, ctx: Context, force: bool, dry_run: bool) -> dict:
     try:
         with (out / "_run.log").open("w", encoding="utf-8", errors="replace") as log:
             log.write(f"# {job.title}\n# job={job.id} start={started}\n")
-            for i, st in enumerate(steps, 1):
-                PROGRESS[job.id].update(step=i, label=st.label or Path(st.cmd[0]).stem if st.cmd else st.label)
-                step_recs.append(run_step(st, log, env))
+            step_recs = run_steps(job, steps, log, env)
     finally:
         PROGRESS.pop(job.id, None)
 
@@ -1075,15 +1151,15 @@ def protect_collection(ctx: Context) -> int:
     write to evidence fails instead of modifying it). Only the attribute changes.
     To delete a case folder later: attrib -r /s /d <case>\\* (or remove the attribute in Explorer)."""
     n = 0
-    for recs in ctx.files_by_art.values():
-        for r in recs:
-            p = ctx.root.joinpath(*r["rel_path"].split("\\"))
-            try:
-                if os.access(p, os.W_OK):
-                    os.chmod(p, stat.S_IREAD)
-                    n += 1
-            except OSError:
-                continue
+    paths = [ctx.root.joinpath(*r["rel_path"].split("\\")) for art, recs in ctx.files_by_art.items()
+             if art != "memory_image" for r in recs] + list(ctx.memory_images)
+    for p in paths:
+        try:
+            if os.access(p, os.W_OK):
+                os.chmod(p, stat.S_IREAD)
+                n += 1
+        except OSError:
+            continue
     return n
 
 
@@ -1159,13 +1235,24 @@ def main(argv=None):
     ap.add_argument("--list", action="store_true", help="List the jobs and whether they apply")
     ap.add_argument("--no-live", action="store_true", help="No live display (text progress every 30 s)")
     ap.add_argument("--no-verify", action="store_true", help="Do not re-check the SHA-1 of the collection after parsing")
+    ap.add_argument("--memory", type=Path, action="append",
+                    help="Memory image of the machine (default: the image found in <case>\\memory\\)")
     args = ap.parse_args(argv)
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8-sig")) if args.manifest.exists() else {"tools": []}
     inventory = load_inventory(args.case, args.manifest)
     out = args.out or (args.case / "parsed")
     out.mkdir(parents=True, exist_ok=True)
-    ctx = Context(args.case, inventory, manifest, out)
+    images = memory.find_images(args.case, args.memory)
+    missing_img = [str(p) for p in images if not p.is_file()]
+    if missing_img:
+        raise SystemExit(f"Memory image not found: {', '.join(missing_img)}")
+    if len(images) > 1:
+        raise SystemExit("Several memory images: " + ", ".join(p.name for p in images)
+                         + ". Keep one per case, or choose it with --memory <path>.")
+    ctx = Context(args.case, inventory, manifest, out, images)
+    if images:
+        print(f"Memory image: {images[0]} ({images[0].stat().st_size / 1e9:.1f} GB)")
 
     jobs = JOBS
     if args.only:

@@ -1,5 +1,5 @@
 {
- "version": "2.0",
+ "version": "2.1",
  "description": "Mapping of parsing outputs -> DuckDB timeline / detections. Source of truth: <repository>\\pipeline\\config\\normalize_map.json. See the README (Normalization) for the format.",
  "defaults": {
   "min_ts": "1980-01-01",
@@ -3788,6 +3788,848 @@
     "description"
    ],
    "note": "Dissect plugin without a dedicated entry: dates taken from the recorddescriptors."
+  },
+  {
+   "id": "vol_image",
+   "glob": [
+    "volatility/memory_image.jsonl"
+   ],
+   "artifact": "Memory image",
+   "category": "system",
+   "tool": "Sleuthline",
+   "times": [],
+   "description": [
+    "name",
+    "sha256"
+   ],
+   "note": "Path, size and SHA-256 of the memory image, computed before the analysis."
+  },
+  {
+   "id": "vol_info",
+   "glob": [
+    "volatility/windows.info.Info.jsonl"
+   ],
+   "artifact": "Memory: system information",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": [],
+   "description": [
+    "Variable",
+    "Value"
+   ]
+  },
+  {
+   "id": "vol_pslist",
+   "glob": [
+    "volatility/windows.pslist.PsList.jsonl"
+   ],
+   "artifact": "Memory: process list (pslist)",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"CreateTime\"",
+     "desc": "process created (memory, pslist)"
+    },
+    {
+     "ts": "\"ExitTime\"",
+     "desc": "process exited (memory, pslist)"
+    }
+   ],
+   "path": [
+    "ImageFileName"
+   ],
+   "description": [
+    "PID",
+    "PPID",
+    "ImageFileName",
+    "SessionId",
+    "Threads",
+    "Handles"
+   ]
+  },
+  {
+   "id": "vol_psscan",
+   "glob": [
+    "volatility/windows.psscan.PsScan.jsonl"
+   ],
+   "artifact": "Memory: process scan (psscan)",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"CreateTime\"",
+     "desc": "process created (memory, psscan)"
+    },
+    {
+     "ts": "\"ExitTime\"",
+     "desc": "process exited (memory, psscan)"
+    }
+   ],
+   "path": [
+    "ImageFileName"
+   ],
+   "description": [
+    "PID",
+    "PPID",
+    "ImageFileName",
+    "SessionId"
+   ]
+  },
+  {
+   "id": "vol_pstree",
+   "glob": [
+    "volatility/windows.pstree.PsTree.jsonl"
+   ],
+   "artifact": "Memory: process tree",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": [],
+   "path": [
+    "Path",
+    "ImageFileName"
+   ],
+   "description": [
+    "PID",
+    "PPID",
+    "Cmd"
+   ]
+  },
+  {
+   "id": "vol_psxview",
+   "glob": [
+    "volatility/windows.malware.psxview.PsXView.jsonl"
+   ],
+   "artifact": "Memory: hidden process check (psxview)",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": [],
+   "path": [
+    "Name"
+   ],
+   "description": [
+    "PID",
+    "pslist",
+    "psscan",
+    "thrdscan",
+    "csrss"
+   ]
+  },
+  {
+   "id": "vol_cmdline",
+   "glob": [
+    "volatility/windows.cmdline.CmdLine.jsonl"
+   ],
+   "artifact": "Memory: command lines",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": [],
+   "path": [
+    "Process"
+   ],
+   "description": [
+    "PID",
+    "Args"
+   ]
+  },
+  {
+   "id": "vol_envars",
+   "glob": [
+    "volatility/windows.envars.Envars.jsonl"
+   ],
+   "artifact": "Memory: environment variables",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_getsids",
+   "glob": [
+    "volatility/windows.getsids.GetSIDs.jsonl"
+   ],
+   "artifact": "Memory: process SIDs",
+   "category": "accounts",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_privileges",
+   "glob": [
+    "volatility/windows.privileges.Privs.jsonl"
+   ],
+   "artifact": "Memory: process privileges",
+   "category": "accounts",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_sessions",
+   "glob": [
+    "volatility/windows.sessions.Sessions.jsonl"
+   ],
+   "artifact": "Memory: logon sessions",
+   "category": "accounts",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"Create Time\"",
+     "desc": "process in session (memory)"
+    }
+   ],
+   "path": [
+    "Process"
+   ],
+   "description": [
+    "Session ID",
+    "Session Type",
+    "Process ID",
+    "User Name"
+   ]
+  },
+  {
+   "id": "vol_joblinks",
+   "glob": [
+    "volatility/windows.joblinks.JobLinks.jsonl"
+   ],
+   "artifact": "Memory: job objects",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_verinfo",
+   "glob": [
+    "volatility/windows.verinfo.VerInfo.jsonl"
+   ],
+   "artifact": "Memory: PE version information",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_dlllist",
+   "glob": [
+    "volatility/windows.dlllist.DllList.jsonl"
+   ],
+   "artifact": "Memory: loaded DLLs",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"LoadTime\"",
+     "desc": "DLL loaded (memory)"
+    }
+   ],
+   "path": [
+    "Path",
+    "Name"
+   ],
+   "description": [
+    "PID",
+    "Process"
+   ]
+  },
+  {
+   "id": "vol_ldrmodules",
+   "glob": [
+    "volatility/windows.malware.ldrmodules.LdrModules.jsonl"
+   ],
+   "artifact": "Memory: unlinked DLLs (ldrmodules)",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_modules",
+   "glob": [
+    "volatility/windows.modules.Modules.jsonl"
+   ],
+   "artifact": "Memory: kernel modules",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_modscan",
+   "glob": [
+    "volatility/windows.modscan.ModScan.jsonl"
+   ],
+   "artifact": "Memory: kernel module scan",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_unloadedmodules",
+   "glob": [
+    "volatility/windows.unloadedmodules.UnloadedModules.jsonl"
+   ],
+   "artifact": "Memory: unloaded kernel modules",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"Time\"",
+     "desc": "kernel module unloaded (memory)"
+    }
+   ],
+   "path": [
+    "Name"
+   ],
+   "description": [
+    "StartAddress"
+   ]
+  },
+  {
+   "id": "vol_driverscan",
+   "glob": [
+    "volatility/windows.driverscan.DriverScan.jsonl"
+   ],
+   "artifact": "Memory: driver scan",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_drivermodule",
+   "glob": [
+    "volatility/windows.malware.drivermodule.DriverModule.jsonl"
+   ],
+   "artifact": "Memory: drivers without module (rootkit check)",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_driverirp",
+   "glob": [
+    "volatility/windows.driverirp.DriverIrp.jsonl"
+   ],
+   "artifact": "Memory: driver IRP hooks",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_devicetree",
+   "glob": [
+    "volatility/windows.devicetree.DeviceTree.jsonl"
+   ],
+   "artifact": "Memory: device tree",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_ssdt",
+   "glob": [
+    "volatility/windows.ssdt.SSDT.jsonl"
+   ],
+   "artifact": "Memory: system call table (SSDT)",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_callbacks",
+   "glob": [
+    "volatility/windows.callbacks.Callbacks.jsonl"
+   ],
+   "artifact": "Memory: kernel callbacks",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_timers",
+   "glob": [
+    "volatility/windows.timers.Timers.jsonl"
+   ],
+   "artifact": "Memory: kernel timers",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_handles",
+   "glob": [
+    "volatility/windows.handles.Handles.jsonl"
+   ],
+   "artifact": "Memory: handles",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_mutantscan",
+   "glob": [
+    "volatility/windows.mutantscan.MutantScan.jsonl"
+   ],
+   "artifact": "Memory: mutexes",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_symlinkscan",
+   "glob": [
+    "volatility/windows.symlinkscan.SymlinkScan.jsonl"
+   ],
+   "artifact": "Memory: symbolic links",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"CreateTime\"",
+     "desc": "symbolic link created (memory)"
+    }
+   ],
+   "path": [
+    "To Name"
+   ],
+   "description": [
+    "From Name"
+   ]
+  },
+  {
+   "id": "vol_filescan",
+   "glob": [
+    "volatility/windows.filescan.FileScan.jsonl"
+   ],
+   "artifact": "Memory: file objects",
+   "category": "file system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_mftscan",
+   "glob": [
+    "volatility/windows.mftscan.MFTScan.jsonl"
+   ],
+   "artifact": "Memory: MFT records in memory",
+   "category": "file system",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"Created\"",
+     "desc": "file created (memory, MFT record)"
+    },
+    {
+     "ts": "\"Modified\"",
+     "desc": "file modified (memory, MFT record)"
+    }
+   ],
+   "path": [
+    "Filename"
+   ],
+   "description": [
+    "Record Number",
+    "Attribute Type",
+    "MFT Type"
+   ]
+  },
+  {
+   "id": "vol_ads",
+   "glob": [
+    "volatility/windows.mftscan.ADS.jsonl"
+   ],
+   "artifact": "Memory: alternate data streams (MFT records)",
+   "category": "file system",
+   "tool": "Volatility 3",
+   "times": [],
+   "path": [
+    "Filename"
+   ],
+   "description": [
+    "ADS Filename",
+    "Hexdump"
+   ]
+  },
+  {
+   "id": "vol_netscan",
+   "glob": [
+    "volatility/windows.netscan.NetScan.jsonl"
+   ],
+   "artifact": "Memory: network connections (netscan)",
+   "category": "network",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"Created\"",
+     "desc": "network endpoint created (memory)"
+    }
+   ],
+   "path": [
+    "Owner"
+   ],
+   "description": [
+    "Proto",
+    "LocalAddr",
+    "LocalPort",
+    "ForeignAddr",
+    "ForeignPort",
+    "State",
+    "PID"
+   ]
+  },
+  {
+   "id": "vol_netstat",
+   "glob": [
+    "volatility/windows.netstat.NetStat.jsonl"
+   ],
+   "artifact": "Memory: network connections (netstat)",
+   "category": "network",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"Created\"",
+     "desc": "network endpoint created (memory, netstat)"
+    }
+   ],
+   "path": [
+    "Owner"
+   ],
+   "description": [
+    "Proto",
+    "LocalAddr",
+    "LocalPort",
+    "ForeignAddr",
+    "ForeignPort",
+    "State",
+    "PID"
+   ]
+  },
+  {
+   "id": "vol_malfind",
+   "glob": [
+    "volatility/windows.malware.malfind.Malfind.jsonl"
+   ],
+   "artifact": "Memory: injected code (malfind)",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_hollowprocesses",
+   "glob": [
+    "volatility/windows.malware.hollowprocesses.HollowProcesses.jsonl"
+   ],
+   "artifact": "Memory: process hollowing",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_processghosting",
+   "glob": [
+    "volatility/windows.malware.processghosting.ProcessGhosting.jsonl"
+   ],
+   "artifact": "Memory: process ghosting",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_pebmasquerade",
+   "glob": [
+    "volatility/windows.malware.pebmasquerade.PebMasquerade.jsonl"
+   ],
+   "artifact": "Memory: PEB masquerading",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_suspicious_threads",
+   "glob": [
+    "volatility/windows.malware.suspicious_threads.SuspiciousThreads.jsonl"
+   ],
+   "artifact": "Memory: suspicious threads",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_suspended_threads",
+   "glob": [
+    "volatility/windows.suspended_threads.SuspendedThreads.jsonl"
+   ],
+   "artifact": "Memory: suspended threads",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_orphan_kernel_threads",
+   "glob": [
+    "volatility/windows.orphan_kernel_threads.Threads.jsonl"
+   ],
+   "artifact": "Memory: orphan kernel threads",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_svcdiff",
+   "glob": [
+    "volatility/windows.malware.svcdiff.SvcDiff.jsonl"
+   ],
+   "artifact": "Memory: hidden services (svcdiff)",
+   "category": "persistence",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_direct_system_calls",
+   "glob": [
+    "volatility/windows.malware.direct_system_calls.DirectSystemCalls.jsonl"
+   ],
+   "artifact": "Memory: direct system calls (EDR evasion)",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_indirect_system_calls",
+   "glob": [
+    "volatility/windows.malware.indirect_system_calls.IndirectSystemCalls.jsonl"
+   ],
+   "artifact": "Memory: indirect system calls (EDR evasion)",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_unhooked_system_calls",
+   "glob": [
+    "volatility/windows.malware.unhooked_system_calls.UnhookedSystemCalls.jsonl"
+   ],
+   "artifact": "Memory: hooked system calls",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_skeleton_key",
+   "glob": [
+    "volatility/windows.malware.skeleton_key_check.Skeleton_Key_Check.jsonl"
+   ],
+   "artifact": "Memory: Skeleton Key check",
+   "category": "accounts",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_etwpatch",
+   "glob": [
+    "volatility/windows.etwpatch.EtwPatch.jsonl"
+   ],
+   "artifact": "Memory: ETW patching",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_debugregisters",
+   "glob": [
+    "volatility/windows.debugregisters.DebugRegisters.jsonl"
+   ],
+   "artifact": "Memory: debug registers",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_svcscan",
+   "glob": [
+    "volatility/windows.svcscan.SvcScan.jsonl"
+   ],
+   "artifact": "Memory: services (svcscan)",
+   "category": "persistence",
+   "tool": "Volatility 3",
+   "times": [],
+   "path": [
+    "Binary",
+    "Binary (Registry)"
+   ],
+   "description": [
+    "Name",
+    "Display",
+    "State",
+    "Start",
+    "PID"
+   ]
+  },
+  {
+   "id": "vol_svclist",
+   "glob": [
+    "volatility/windows.svclist.SvcList.jsonl"
+   ],
+   "artifact": "Memory: services (svclist)",
+   "category": "persistence",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_getservicesids",
+   "glob": [
+    "volatility/windows.getservicesids.GetServiceSIDs.jsonl"
+   ],
+   "artifact": "Memory: service SIDs",
+   "category": "persistence",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_hivelist",
+   "glob": [
+    "volatility/windows.registry.hivelist.HiveList.jsonl"
+   ],
+   "artifact": "Memory: registry hives",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_userassist",
+   "glob": [
+    "volatility/windows.registry.userassist.UserAssist.jsonl"
+   ],
+   "artifact": "Memory: UserAssist",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"Last Updated\"",
+     "desc": "UserAssist: last run (memory)"
+    }
+   ],
+   "path": [
+    "Name"
+   ],
+   "description": [
+    "Hive Name",
+    "Count",
+    "Focus Count"
+   ]
+  },
+  {
+   "id": "vol_scheduled_tasks",
+   "glob": [
+    "volatility/windows.registry.scheduled_tasks.ScheduledTasks.jsonl"
+   ],
+   "artifact": "Memory: scheduled tasks (registry)",
+   "category": "persistence",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"Creation Time\"",
+     "desc": "scheduled task created (memory)"
+    },
+    {
+     "ts": "\"Last Run Time\"",
+     "desc": "scheduled task last run (memory)"
+    }
+   ],
+   "path": [
+    "Action"
+   ],
+   "description": [
+    "Task Name",
+    "Action Arguments",
+    "Principal ID",
+    "Enabled"
+   ]
+  },
+  {
+   "id": "vol_amcache",
+   "glob": [
+    "volatility/windows.registry.amcache.Amcache.jsonl"
+   ],
+   "artifact": "Memory: Amcache",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"LastModifyTime\"",
+     "desc": "Amcache: last modification (memory)"
+    },
+    {
+     "ts": "\"InstallTime\"",
+     "desc": "Amcache: install (memory)"
+    }
+   ],
+   "path": [
+    "Path"
+   ],
+   "description": [
+    "EntryType",
+    "Company",
+    "ProductName",
+    "SHA1"
+   ]
+  },
+  {
+   "id": "vol_shimcachemem",
+   "glob": [
+    "volatility/windows.shimcachemem.ShimcacheMem.jsonl"
+   ],
+   "artifact": "Memory: ShimCache",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": [
+    {
+     "ts": "\"Last Modified\"",
+     "desc": "ShimCache: file modified (memory)"
+    }
+   ],
+   "path": [
+    "File Path"
+   ],
+   "description": [
+    "Order",
+    "Exec Flag"
+   ]
+  },
+  {
+   "id": "vol_certificates",
+   "glob": [
+    "volatility/windows.registry.certificates.Certificates.jsonl"
+   ],
+   "artifact": "Memory: registry certificates",
+   "category": "system",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_getcellroutine",
+   "glob": [
+    "volatility/windows.registry.getcellroutine.GetCellRoutine.jsonl"
+   ],
+   "artifact": "Memory: registry hooks (GetCellRoutine)",
+   "category": "anti-forensics",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_cmdscan",
+   "glob": [
+    "volatility/windows.cmdscan.CmdScan.jsonl"
+   ],
+   "artifact": "Memory: console command history (cmdscan)",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": []
+  },
+  {
+   "id": "vol_consoles",
+   "glob": [
+    "volatility/windows.consoles.Consoles.jsonl"
+   ],
+   "artifact": "Memory: console buffers (consoles)",
+   "category": "execution",
+   "tool": "Volatility 3",
+   "times": []
   }
  ]
 }

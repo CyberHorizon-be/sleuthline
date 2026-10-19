@@ -18,7 +18,8 @@ Inspired by the SANS FOR500/FOR508 methodologies (triage, execution, persistence
    - Compatibility Assistant Store (PCA, `raw.registry_complement`) = program started by the user, without a reliable execution date (the key date only applies to the last value written);
    - Wi-Fi profile (`raw.native_wifi`) = configured network; the XML creation approximates the first connection, connection dates are in `raw.reg_knownnetworks` / `raw.dissect_network_history`;
    - `$FN` dates are more reliable than `$SI` in case of timestomping (SI<FN);
-   - rows with `mapping = 'auto'` are not validated: check the raw table before citing them.
+   - rows with `mapping = 'auto'` are not validated: check the raw table before citing them;
+   - memory (`raw.vol_*`, Volatility 3, only if a memory image was provided) = state of the machine at the moment of the capture: running processes and their command lines, live and recently closed connections, injected code. A process seen in `vol_psscan` but not in `vol_pslist` is unlinked (hidden or exited); `vol_malfind` has false positives (.NET, JIT, some security products): an RWX region starting with `MZ` or shellcode is significant, an empty one is not. Everything from the memory image counts as **one** source for corroboration.
 5. **Corroborate.** An important finding relies on at least two independent sources (e.g. Prefetch + 4688 + Sysmon 1). The program enforces it: a critical or high finding is kept as `confirmed` only with two independent sources (a Hayabusa/Chainsaw detection and the event it fires on are ONE source: the same .evtx), otherwise it is recorded as `probable`. Add corroborating references with `add_evidence` when you find them. Evidence with `mapping = 'auto'` never confirms on its own.
    Separate in each finding the **facts** (`description`: what the records show, with UTC times and identifiers) from the **interpretation** (`analysis`: what it means, alternatives, certainty). An answer to a question cites its evidence, unless it is `undetermined`.
 6. **Pivot.** Every new item (file, hash, user, IP, time) is searched in the other sources: time window around it (± 5 to 30 min), same path in `$MFT`/`$J`, same name in the EVTX.
@@ -66,8 +67,22 @@ Goal: establish which programs were executed, when, by whom and from where.
 - EVTX: 4688 (Security), Sysmon 1 (with `Hashes`), 4103/4104 (PowerShell), 400/403/600 (Windows PowerShell), PSReadLine history `raw.dissect_powershell_history`.
 - Look first for: executables in unusual folders (`\Users\*\AppData`, `\Temp`, `\ProgramData`, `\Downloads`, `\Public`, volume root), names imitating system binaries, dual-use tools (psexec, procdump, mimikatz, rclone, 7z, certutil, bitsadmin, wmic, powershell -enc, mshta, rundll32, regsvr32), scripts.
 - For each suspicious executable: SHA1 (Amcache) or hashes (Sysmon) and their presence in `hash_hits`, first/last execution, run count, user, file creation (`raw.mft`), origin (Zone.Identifier, download).
+- If a memory image was analyzed: was the executable still running at the capture (`raw.vol_pslist`, `raw.vol_cmdline`)? Memory is examined in detail at the next step.
 
-## Step 4: Persistence
+## Step 4: Memory (RAM)
+
+Goal: if a memory image was analyzed (tables `raw.vol_*`; `raw.vol_image` gives its name and SHA-256), establish what was running at the moment of the capture and confront it with the disk. If there is no `raw.vol_*` table, record in step_complete that no memory image was provided, and move on.
+
+- System: `raw.vol_info` (kernel, build, time of the capture: `SystemTime`). Compare the capture time with the KAPE collection time.
+- Processes: `raw.vol_pslist`, `raw.vol_psscan` (also exited and unlinked processes), `raw.vol_pstree` (`Cmd`, `Path`, `Audit`), `raw.vol_psxview` (a process missing from some lists is suspicious), `raw.vol_cmdline`. Look for: wrong parent (e.g. `explorer.exe` not started by `userinit.exe`, `svchost.exe` not started by `services.exe`), system names in unusual paths, a second `lsass.exe`, short-lived `cmd.exe` / `powershell.exe` children of unusual parents.
+- Injection and evasion: `raw.vol_malfind` (RWX private regions; `Hexdump` / `Disasm` starting with `MZ` or shellcode), `raw.vol_hollowprocesses`, `raw.vol_processghosting`, `raw.vol_pebmasquerade`, `raw.vol_ldrmodules` (DLL not in the three lists), `raw.vol_suspicious_threads`, `raw.vol_direct_system_calls` / `raw.vol_indirect_system_calls`, `raw.vol_etwpatch`, `raw.vol_unhooked_system_calls`.
+- Network: `raw.vol_netscan` (connections and listening ports with their owning process, including recently closed ones). For each external address: process, PID, creation time, and the same address on the disk side (browser, Defender, Sysmon 3, SRUM).
+- Code loaded: `raw.vol_dlllist` (DLLs loaded from user folders), `raw.vol_modules` / `raw.vol_modscan` / `raw.vol_driverscan` / `raw.vol_drivermodule` (drivers without a module: rootkit), `raw.vol_callbacks`, `raw.vol_ssdt`, `raw.vol_driverirp`.
+- Persistence and activity still in memory: `raw.vol_svcscan` / `raw.vol_svcdiff` (services hidden from the service list), `raw.vol_scheduled_tasks`, `raw.vol_userassist`, `raw.vol_shimcachemem`, `raw.vol_amcache`, console history `raw.vol_consoles` / `raw.vol_cmdscan` (commands typed in cmd.exe, often absent from the disk), `raw.vol_mutantscan` (known malware mutexes), `raw.vol_mftscan` / `raw.vol_ads` (MFT records and alternate data streams still in memory).
+- Accounts: `raw.vol_sessions`, `raw.vol_getsids`, `raw.vol_privileges` (SeDebugPrivilege enabled in a user process), `raw.vol_skeleton_key`.
+- **Confront memory and disk** for every suspicious process: its executable on disk (`raw.mft`, Prefetch, Amcache SHA1), its creation in the event logs (4688, Sysmon 1 with the same PID and time), its network activity. A process in memory with no trace on disk (deleted file, fileless code) and a disk artifact contradicted by memory are findings in themselves. Cite the memory record **and** the disk records: they are independent sources.
+
+## Step 5: Persistence
 
 Goal: identify any mechanism allowing to survive a reboot or to start again.
 
@@ -81,7 +96,7 @@ Goal: identify any mechanism allowing to survive a reboot or to start again.
 - Startup: Startup folders (`raw.native_startup`: SHA-256 and original timestamps, then `raw.mft` / `raw.lnk`), modified hosts file (`raw.native_hosts`), Office (`raw.dissect_msoffice_startup`), PendingFileRenameOperations.
 - Compare the creation dates with the incident window; rule out legitimate Microsoft / vendor entries with a justification.
 
-## Step 5: Accounts, authentication and privileges
+## Step 6: Accounts, authentication and privileges
 
 Goal: trace logons, accounts used or created and privilege escalations.
 
@@ -90,17 +105,18 @@ Goal: trace logons, accounts used or created and privilege escalations.
 - SAM accounts (`raw.reg_useraccounts`): creation, last logon, password changes, group membership.
 - Look for: new accounts, accounts added to the administrators, unusual type 3/10 logons, bursts of failures, use of explicit credentials (4648).
 
-## Step 6: Remote access and lateral movement
+## Step 7: Remote access and lateral movement
 
 Goal: determine whether the machine was controlled remotely or used as a pivot.
 
-- Inbound/outbound RDP: events of step 5, `raw.dissect_mru_mstsc`, `raw.registry_kroll` (Terminal Server Client), bitmap cache (if present), .rdp files `raw.native_rdp` (Default.rdp = last mstsc connection: host, account, gateway; a .rdp received by e-mail or downloaded is a known phishing vector).
+- Inbound/outbound RDP: events of step 6, `raw.dissect_mru_mstsc`, `raw.registry_kroll` (Terminal Server Client), bitmap cache (if present), .rdp files `raw.native_rdp` (Default.rdp = last mstsc connection: host, account, gateway; a .rdp received by e-mail or downloaded is a known phishing vector).
 - PsExec and equivalents: `PSEXESVC` services, `\ADMIN$`, 5140/5145, 7045 with random names.
 - WinRM / remote PowerShell: WinRM/Operational 6, 91, 168; Windows PowerShell 400 with HostName `ServerRemoteHost`.
 - Remote access tools (AnyDesk, TeamViewer, ScreenConnect, RustDesk, Splashtop...): execution, services, logs (`raw.dissect_remoteaccess_*`: AnyDesk, TeamViewer, Splashtop, RustDesk). ScreenConnect, Atera and other RMM tools: no parser, look for their folders in `raw.mft`, their services and the Application log ("ScreenConnect" source).
 - Network shares and mapped drives: `raw.dissect_mru_networkdrive`, ShellBags of UNC paths.
+- Memory (if available): connections of `raw.vol_netscan` on 3389, 445, 5985/5986 and to other internal hosts, and the process owning them.
 
-## Step 7: User activity on files and folders
+## Step 8: User activity on files and folders
 
 Goal: rebuild the files and folders opened, created, renamed or deleted around the identified pivots.
 
@@ -113,7 +129,7 @@ Goal: rebuild the files and folders opened, created, renamed or deleted around t
 - Recycle Bin: `raw.recyclebin`, `raw.dissect_recyclebin`.
 - Removable devices: `raw.reg_usb`, `raw.reg_usbstor`, `raw.reg_portabledevices`, EMDMgmt (`raw.registry_complement`), setupapi (`timeline` artifact `setupapi.dev.log`), volumes in LNK/Jump Lists (volume serial number to match with EMDMgmt, converted to hexadecimal).
 
-## Step 8: Web browsing, downloads and e-mail
+## Step 9: Web browsing, downloads and e-mail
 
 Goal: identify the origin of the suspicious files and the relevant web activity.
 
@@ -123,7 +139,7 @@ Goal: identify the origin of the suspicious files and the relevant web activity.
 - Correlate each download with the creation of the file (`raw.mft`, Zone.Identifier `HostUrl`/`ReferrerUrl`) and its execution (step 3).
 - Typed searches revealing the intent (tools, techniques, evasion).
 
-## Step 9: Defense evasion and anti-forensics
+## Step 10: Defense evasion and anti-forensics
 
 Goal: detect attempts to hide the activity or to weaken security.
 
@@ -132,8 +148,9 @@ Goal: detect attempts to hide the activity or to weaken security.
 - Timestomping: `raw.mft` where `"SI<FN" = 'True'` or `"uSecZeros" = 'True'` on relevant files; compare $SI, $FN, $J, $LogFile.
 - Mass deletions ($J: FileDelete), wiping tools (sdelete, cipher /w, CCleaner, BleachBit), emptied Recycle Bin, deleted Prefetch, disabled PowerShell logging.
 - System time changes: 4616, Kernel-General 1.
+- Memory (if available): injection, hollowing, hooks and hidden processes found at step 4 (`raw.vol_malfind`, `raw.vol_psxview`, `raw.vol_ldrmodules`, `raw.vol_etwpatch`...).
 
-## Step 10: Collection, exfiltration and communications
+## Step 11: Collection, exfiltration and communications
 
 Goal: assess whether data was gathered, compressed or sent outside.
 
@@ -143,7 +160,7 @@ Goal: assess whether data was gathered, compressed or sent outside.
 - Network connections visible in the EVTX (5156 if enabled, Sysmon 3, 22 DNS), firewall (`raw.dissect_firewall_*`, added rules: 2004/2005).
 - Network indicators to extract as IOCs: IPs, domains, URLs.
 
-## Step 11: Incident timeline and correlation
+## Step 12: Incident timeline and correlation
 
 Goal: assemble the findings into a coherent incident timeline.
 
@@ -152,7 +169,7 @@ Goal: assemble the findings into a coherent incident timeline.
 - Check the consistency of times between sources; report inconsistencies (clock, time zone, timestomping).
 - List the final IOCs with `add_ioc` (hash, path, file name, IP, domain, URL, account, registry key, service, task), each with its evidence.
 
-## Step 12: Summary, answers and recommendations
+## Step 13: Summary, answers and recommendations
 
 Goal: produce the summary elements of the report.
 

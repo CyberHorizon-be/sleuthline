@@ -19,6 +19,9 @@
     Extra options are passed to the script of the step
     (e.g. sleuthline.ps1 parse <case> --only srumecmd --force).
 
+    Memory: a memory image in <case>\memory\ is analyzed with Volatility 3 during parse;
+    another location: sleuthline.ps1 parse <case> --memory D:\dumps\host.raw
+
 .EXAMPLE
     C:\Sleuthline\pipeline\sleuthline.ps1 check
 .EXAMPLE
