@@ -166,14 +166,12 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    .\install\02_Install-Tools.ps1 -Only Pipeline               # copies the pipeline, and the key, to C:\Sleuthline\pipeline
    ```
    Why redeploy: Sleuthline runs from `C:\Sleuthline\pipeline`, a copy of the repository made by the installer. A file edited in `C:\Sleuthline\pipeline` would be overwritten by the next deployment, so every change goes into `C:\Sleuthline-setup` followed by a redeployment. `api_keys.txt` is excluded from git.
-   Alternative without redeployment: an environment variable, which takes precedence over the file. Use your real key, then open a new window:
-   `[Environment]::SetEnvironmentVariable('ANTHROPIC_API_KEY', 'sk-ant-...', 'User')`
 3. Check the key and the model (two tiny calls, a fraction of a cent):
    ```powershell
    C:\Sleuthline\pipeline\sleuthline.ps1 check
    # OK: tool call and tool result accepted (8.9 s, 893 input / 54 output tokens). Final answer: 'OK'
    ```
-   On failure, `check` prints the exact error of the API (invalid key, workspace, credit, unknown model).
+   On failure, `check` prints the exact error of the API, such as the workspace and credit messages above.
 
 **Optional: run the tests** (37 tests, about 10 seconds, no network, no cost):
 ```powershell
@@ -192,13 +190,7 @@ C:\Sleuthline\cases\test01\
 └── LongFileNames\
 ```
 
-**Keep the original timestamps when copying.** The Windows Explorer resets the creation date of copied files: the copy date then appears in the timeline (e.g. LNK files dated the day of the analysis). Copy with:
-
-```powershell
-robocopy "<KAPE output folder>" "C:\Sleuthline\cases\<case>" /E /COPY:DAT /DCOPY:T
-```
-
-If the collection was already copied with the Explorer, say so in the guidance file (step 5): the agent will treat the dates of the copy day as artifacts.
+**Dates of the copy.** Copying the collection to the VM can give some files the date of the copy: on Lab 1, LNK files appeared in the timeline with the date of the analysis day. Say so in the guidance file (step 5) so that the agent treats those dates as copy artifacts, not evidence.
 
 ### 2. Inventory: `sleuthline.ps1 inventory <case>`
 
@@ -225,8 +217,7 @@ Look at `<case>\parsed\run_summary.md`. On Lab 1: 22 `ok`, 8 `no_input`, 1 `part
 | `ok` | Outputs produced | Nothing |
 | `no_input` | The artifact is not in the collection (no Chrome, no BITS, no OneDrive...) | Nothing: normal |
 | `warning` | Return code 0 but a warning message (e.g. SIDR: *"database state is not clean"*, usual on a live collection) | Read `parsed\<job>\_run.log` |
-| `partial` | Some sub-commands failed (e.g. one Dissect plugin) | Check whether another tool covers the same artifact (SIDR covers Windows Search) |
-| `failed`, `timeout`, `tool_missing` | No usable output | Read `_run.log`; run the job again: `parse <case> --only <job> --force` |
+| `partial` | Some sub-commands failed (on Lab 1: the Dissect `search` plugin) | Check whether another tool covers the same artifact (SIDR covers Windows Search) |
 
 The summary also states whether a collection file was modified by parsing (expected: *no file modified*).
 
@@ -284,12 +275,7 @@ dates of 2026-10-19 are copy artefacts, not evidence.
 - What are the hashes of the malicious executable(s), for submission to VirusTotal by the analyst?
 ```
 
-Tips:
-
-- **Questions drive the report.** Every question gets a dedicated answer with its evidence, or `undetermined` with what is missing. Ask what the reader of the report needs to know.
-- **IOCs are cheap and powerful.** The automatic sweep finds every occurrence in the timeline and the raw tables before the agent starts, and the agent then explains them.
-- **A blind run is a good test.** On a known case, give only the context and the questions, then compare the report with what you know.
-- **Report language.** The model writes in English by default. For another language, set `"report_language": "fr"` (or `de`, `nl`...) in `C:\Sleuthline-setup\pipeline\config\llm_config.json`, then redeploy (`.\install\02_Install-Tools.ps1 -Only Pipeline`).
+**A blind run is a good test.** On a known case, give only the context and the questions, then compare the report with what you know. That is what was done on Lab 1.
 
 ### 6. Analysis: `sleuthline.ps1 analyze <case>`
 
@@ -297,23 +283,9 @@ Tips:
 C:\Sleuthline\pipeline\sleuthline.ps1 analyze C:\Sleuthline\cases\test01
 ```
 
-The only paid step. The agent works through the 12 steps of `PLAYBOOK.md` (context, detections, execution, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Expect from 30 minutes to over an hour depending on the case. Progress is shown step by step in the console.
+The only paid step. The agent works through the 12 steps of `PLAYBOOK.md` (context, detections, execution, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
 
-- **Interrupted?** (network, budget, Ctrl+C): run the same command again, it resumes where it stopped.
-- **Cost control:** `"max_billed_tokens_per_run"` under `limits` in `llm_config.json` stops a run cleanly at a budget (0 = no limit). Usage is recorded in `findings.json` and in the report. The system prompt and the conversation of each step are read back from the prompt cache, which keeps the cost down.
-
-### 7. After the analysis
-
-| Need | Command |
-|---|---|
-| Read the report | `<case>\analysis\report_<case>_<date>.docx` (in Word, press F9 to update the table of contents) |
-| Ask one more question, without redoing the analysis | `sleuthline.ps1 ask <case> "Where does 1.exe come from?"` |
-| New context or IOCs in `guidance.txt` | `sleuthline.ps1 analyze <case> --steps 3,4 --force` (only the replayed steps are billed) |
-| Regenerate the report (free, no model call) | `sleuthline.ps1 report <case>` |
-| Start the analysis over | `sleuthline.ps1 analyze <case> --reset` (the previous `findings.json` is archived) |
-| Correct the confidence of a finding you verified | `analyst_override` in `findings.json`, then `sleuthline.ps1 report <case>` (see [Guarantees](#4-analysis-agent-and-word-report)) |
-
-Other files in `<case>\analysis\`: `key_timeline.csv`, `incident_timeline.csv` (every event of the incident window), `iocs.csv`, `findings.json` (analysis state) and `transcript.jsonl` (every query and answer of the model).
+On Lab 1, the agent identified the malicious executable, its masquerading, the Defender tampering and the reconnaissance commands during the first two steps, with no IOC given. The system prompt and the conversation of each step are read back from the prompt cache: after 25 model calls, 92 % of the input tokens came from the cache.
 
 ## Usage
 
