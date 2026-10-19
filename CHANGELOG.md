@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Docs: new README walkthrough *Analyzing a case, step by step*: based on a real run on Threat Hunting Lab 1: per-window script permission, API key setup and `check`, each step with its duration and what to look at, the guidance file in detail with the Lab 1 example.
 - **Fix: Claude API with Claude 5.5 models.** The analysis had only been run through the mock provider and could not work against the real API:
   - the Claude profiles sent `temperature: 0.1`, which Claude 5.5 models reject (HTTP 400). It is now `null`;
   - the thinking blocks of the model's answers were dropped when the conversation was sent back (HTTP 400). Assistant turns are now echoed exactly as received;
