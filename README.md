@@ -25,7 +25,7 @@ Memory image ──────────────────────>
 
 **Tested on** [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1), a public exercise (Windows 10 workstation compromised with a Meterpreter agent), in a blind run with only the 8 questions of the exercise: **about 50 minutes** from the KAPE collection to the Word report (parsing 27 min, normalization 1 min, analysis 22 min) and **7.23 USD** of Claude Opus 5.5 API usage (amount billed, Claude Console). The agent answered all 8 questions with their evidence (see [the walkthrough](#analyzing-a-case-step-by-step)). **The generated report:** [PDF](docs/examples/report_threat_hunting_lab1.pdf) · [Word](docs/examples/report_threat_hunting_lab1.docx).
 
-**Memory tested on** [DFIR Madness Case 001 "The Stolen Szechuan Sauce"](https://dfirmadness.com/the-stolen-szechuan-sauce/), with the memory image of the workstation only (`DESKTOP-SDN1RPT`, Windows 10, 2 GB), in a blind run without guidance: parsing 11 min (all 58 Volatility plugins OK), normalization 1 min, analysis 80 min, **about 10 USD** of Claude Opus 5.5 API usage. From memory alone, the agent found the RDP logon of the domain Administrator, the malware `coreupdater.exe` and its auto-start service, its download with Edge, the code injected into `spoolsv.exe` with access to `lsass.exe`, and the two sessions to the C2 `203.78.103.109:443` (see [Memory](#memory-volatility-3)).
+**Memory tested on** [DFIR Madness Case 001 "The Stolen Szechuan Sauce"](https://dfirmadness.com/the-stolen-szechuan-sauce/), with the memory image of the workstation only (`DESKTOP-SDN1RPT`, Windows 10, 2 GB), in a blind run without guidance: parsing 11 min (all 58 Volatility plugins OK), normalization 1 min, analysis 80 min, **about 10 USD** of Claude Opus 5.5 API usage. From memory alone, the agent found the RDP logon of the domain Administrator, the malware `coreupdater.exe` and its auto-start service, its download with Edge, the code injected into `spoolsv.exe` with access to `lsass.exe`, and the two sessions to the C2 `203.78.103.109:443` (see [Memory](#memory-volatility-3)). **The generated report:** [PDF](docs/examples/report_dfirmadness_case001_memory.pdf) · [Word](docs/examples/report_dfirmadness_case001_memory.docx).
 
 > Sleuthline assists an analyst; it is not an automated expert. The report must be reviewed and validated by a qualified analyst before any distribution or decision (see [Limitations and responsibility](#limitations-and-responsibility)).
 
@@ -103,7 +103,7 @@ Details and results: **[Memory (Volatility 3)](#memory-volatility-3)**.
 <repository>\                       ← source of truth (e.g. C:\Sleuthline-setup)
 ├── Install-All.ps1                  ← ENTRY POINT: installs everything
 ├── LICENSE, README.md, CHANGELOG.md
-├── docs\examples\                 ← report generated on Threat Hunting Lab 1 (PDF and Word)
+├── docs\examples\                 ← reports generated on Threat Hunting Lab 1 and on DFIR Madness Case 001 (memory) (PDF and Word)
 ├── install\                         ← VM installation
 │   ├── 01_Prepare-VM.ps1                Python, .NET, 7-Zip, Git, folder tree, venv
 │   ├── 02_Install-Tools.ps1             parsing tools + deployment of the pipeline
