@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **Network capture analysis with Suricata.** Captures in `<case>\pcap\` (or `parse <case> --pcap <file>`, repeatable) are analyzed by the new `suricata` job: SHA-256 of the captures, offline configuration derived from the shipped `suricata.yaml`, one Suricata run per capture. EVE output split by event type (`raw.suricata_*`), alerts in `detections`, flows / DNS / HTTP / TLS / files in the timeline.
-- Installer: Suricata (Windows MSI extracted, not installed; `-Only Suricata`, `-SuricataMsi <file>`) and ET Open rules through `suricata-update`; the rules folder is locked.
+- Installer: Suricata (Windows MSI extracted, not installed; `-Only Suricata`, `-SuricataMsi <file>`) and ET Open rules through `suricata-update`; the rules folder is locked. `-InstallNpcap` installs Npcap (needed by `suricata.exe`, interactive installer).
 - Playbook: new step 5 *Network traffic (PCAP)*, plus network checks in the remote access and exfiltration steps (14 steps). Evidence policy: the captures count as one source.
 - Orchestrator: jobs run sequentially also honour their preliminary steps (used by the Suricata job).
 - Tests: 48 tests, including the Suricata job end to end with EVE events recorded from a real Suricata run, its normalization and the evidence policy.

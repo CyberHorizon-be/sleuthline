@@ -47,6 +47,12 @@
     Path to a Suricata Windows installer (.msi) downloaded manually. Default: the latest
     Suricata-<version>-<n>-64bit.msi of https://www.openinfosecfoundation.org/download/windows/.
 
+.PARAMETER InstallNpcap
+    The Windows build of Suricata needs wpcap.dll, provided by Npcap (a network driver). With this
+    switch, if suricata.exe does not start, the latest Npcap installer of https://npcap.com is
+    downloaded and started with WinPcap API-compatible mode: the Npcap free edition has no silent
+    install, so its installer window opens and must be completed. Without it, only a warning.
+
 .PARAMETER GitHubToken
     Optional GitHub token (avoids the 60 requests/hour limit of the API).
     Default: GITHUB_TOKEN environment variable.
@@ -79,6 +85,7 @@ param(
     [string[]]$Only,
     [string]$KapeZip,
     [string]$SuricataMsi,
+    [switch]$InstallNpcap,
     [string]$GitHubToken = $env:GITHUB_TOKEN,
     [switch]$Locked,
     [string]$LockFile
@@ -897,11 +904,35 @@ try {
         $r.version = "Suricata $ver"
         $r.executables['suricata'] = $exe.FullName
         $r.executables['suricata_yaml'] = $yaml.FullName
-        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-        try { $bi = (& $exe.FullName --build-info 2>&1 | Out-String); $rc = $LASTEXITCODE } finally { $ErrorActionPreference = $prevEap }
+        $buildInfo = {
+            $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+            try { $out = (& $exe.FullName --build-info 2>&1 | Out-String); $code = $LASTEXITCODE } finally { $ErrorActionPreference = $prevEap }
+            @{ Code = $code; Out = $out }
+        }
+        $b = & $buildInfo; $rc = $b.Code; $bi = $b.Out
+        # -1073741515 = 0xC0000135: a DLL is missing, wpcap.dll of Npcap (not shipped with Suricata)
+        if ($rc -ne 0 -and $InstallNpcap) {
+            if ($script:Lock) { throw '-Locked mode: Npcap is not installed automatically (install it from https://npcap.com)' }
+            $npPage = (Invoke-WebRequest -Uri 'https://npcap.com/' -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }).Content
+            $npName = [regex]::Matches($npPage, 'npcap-(\d+)\.(\d+)\.exe') |
+                Sort-Object { [int]$_.Groups[1].Value }, { [int]$_.Groups[2].Value } |
+                ForEach-Object { $_.Value } | Select-Object -Last 1
+            if (-not $npName) { throw 'No npcap-<version>.exe found on https://npcap.com/ (install Npcap manually)' }
+            $npUrl = "https://npcap.com/dist/$npName"
+            $npExe = Join-Path $DlDir $npName
+            Write-Info "Downloading: $npUrl"
+            Invoke-WebRequest -Uri $npUrl -OutFile $npExe -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }
+            $r.downloads[$npUrl] = (Get-FileHash $npExe -Algorithm SHA256).Hash
+            Write-Info "Npcap installer started ($npName, WinPcap API-compatible mode): complete its window"
+            $np = Start-Process $npExe -ArgumentList '/winpcap_mode=yes' -Wait -PassThru
+            if ($np.ExitCode -ne 0) { throw "Npcap installer ended with code $($np.ExitCode) (cancelled?)" }
+            $r.notes += "Npcap installed ($npName, WinPcap API-compatible mode)"
+            $b = & $buildInfo; $rc = $b.Code; $bi = $b.Out
+        }
         if ($rc -ne 0) {
             $r.status = 'WARN'
-            $r.notes += "suricata.exe --build-info fails (code $rc): if a DLL is missing (wpcap.dll), install Npcap (https://npcap.com) on the VM - your decision, it is a system driver"
+            $hint = if ($InstallNpcap) { 'Npcap is installed but suricata.exe still does not start' } else { 'if a DLL is missing (wpcap.dll), run again with -InstallNpcap (installs Npcap, a network driver: your decision)' }
+            $r.notes += "suricata.exe --build-info fails (code $rc): $hint"
         } else {
             Set-Content -Path (Join-Path $suDir 'build-info.txt') -Value $bi -Encoding UTF8
         }
