@@ -1,20 +1,25 @@
 # Sleuthline
 
-**From a KAPE collection to an evidence-backed incident response report.**
+**From a KAPE collection and a memory image to an evidence-backed incident response report.**
 
-Sleuthline is a Windows DFIR pipeline for an isolated analysis VM. It takes a KAPE triage collection (e.g. `!SANS_Triage`), parses it with recognized forensic tools, normalizes every output into a single DuckDB database with a UTC timeline, then lets an LLM agent investigate the case step by step and write a technical Word report in which **every finding cites verifiable records** of the database.
+Sleuthline is a Windows DFIR pipeline for an isolated analysis VM. It takes a KAPE triage collection (e.g. `!SANS_Triage`) and, if you have one, a memory image of the machine, parses them with recognized forensic tools (Volatility 3 for the memory), normalizes every output into a single DuckDB database with a UTC timeline, then lets an LLM agent investigate the case step by step and write a technical Word report in which **every finding cites verifiable records** of the database.
 
 ```
-KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization ──> 4. analysis agent ──> Word report
-                    coverage,         EZTools,        DuckDB: raw tables,   playbook steps,       findings, timeline,
-                    integrity         Hayabusa,       UTC timeline,         SQL tools, evidence   IOCs, MITRE, answers,
-                    (KAPE SHA-1)      Chainsaw,       detections,           checked against       recommendations,
-                                      Zircolite,      hash lists            the database          traceability
-                                      Dissect, plaso…
+KAPE collection ──> 1. inventory ──> 2. parsing ──────┐
+                    coverage,         EZTools,        │
+                    integrity         Hayabusa,       │
+                    (KAPE SHA-1)      Chainsaw,       │
+                                      Zircolite,      ├──> 3. normalization ──> 4. analysis agent ──> Word report
+                                      Dissect, plaso… │    DuckDB: raw tables,   playbook steps        findings, timeline,
+                                                      │    UTC timeline,         (memory step),        IOCs, MITRE, answers,
+Memory image ──────────────────────> 2. parsing ──────┘    detections,           SQL tools, evidence   recommendations,
+(optional)                            Volatility 3:        hash lists            checked against       traceability
+                                      SHA-256, 58 plugins                        the database
 ```
 
-- **Recognized tools only.** EZTools, Hayabusa, Chainsaw, Zircolite, SigmaHQ, Dissect, plaso, Hindsight, SIDR, LogFileParser, BitsParser, bmc-tools, odl.py. A custom parser is written only when no tool exists (`pipeline\docs\POLICY_parsers.md`).
-- **Evidence first.** Read-only collection, integrity check against the KAPE SHA-1, working copies for tools that write into databases, every timeline row and finding traceable to `<output>#<record>` and to the original path on the machine.
+- **Recognized tools only.** EZTools, Hayabusa, Chainsaw, Zircolite, SigmaHQ, Dissect, plaso, Hindsight, SIDR, LogFileParser, BitsParser, bmc-tools, odl.py, Volatility 3. A custom parser is written only when no tool exists (`pipeline\docs\POLICY_parsers.md`).
+- **Evidence first.** Read-only collection and memory image, integrity check against the KAPE SHA-1, SHA-256 of the memory image, working copies for tools that write into databases, every timeline row and finding traceable to `<output>#<record>` and to the original path on the machine.
+- **Disk and memory together.** The memory image shows what was running at the moment of the capture (processes, injected code, network connections, services); a dedicated playbook step confronts it with the disk artifacts, and the evidence policy counts them as independent sources.
 - **Any model.** Claude (default), any OpenAI-compatible API, or a local model (Ollama, LM Studio, vLLM) so that no data leaves the VM.
 - **Reproducible.** Tool versions locked in `install\tools-lock.json`, pipeline version (git commit) recorded in the database and the report, tests and regression references.
 
@@ -39,10 +44,10 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization
 | Step | Command | What it does | What it produces |
 |---|---|---|---|
 | 1 | `inventory` | Lists every file of the KAPE collection, finds the tool that parses it, checks its integrity against the KAPE SHA-1 | `inventory\coverage.md` |
-| 2 | `parse` | Runs the forensic tools on the collection, read-only | `parsed\` (one folder per tool), `parsed\run_summary.md` |
+| 2 | `parse` | Runs the forensic tools on the collection, and Volatility 3 on the memory image if there is one, read-only | `parsed\` (one folder per tool), `parsed\run_summary.md` |
 | 3 | `normalize` | Loads every output into one DuckDB database with a UTC timeline and the detections | `db\case.duckdb`, `db\normalize_report.md` |
 | | *pause* | You tell the agent what you know: context, questions, IOCs | `analysis\guidance.txt` |
-| 4 | `analyze` | The agent investigates following the playbook, answers your questions, every finding backed by database records | `analysis\report_<case>_<date>.docx` |
+| 4 | `analyze` | The agent investigates following the playbook (with a memory step if there is an image), answers your questions, every finding backed by database records | `analysis\report_<case>_<date>.docx` |
 
 **How to run it.** Every command, from the clone to the report, as run on [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1). In a PowerShell window **opened as administrator**:
 
@@ -79,6 +84,19 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test01   # a
 
 Each step, what to look at between them and how to fill in the guidance file: **[Analyzing a case, step by step](#analyzing-a-case-step-by-step)**.
 
+**With a memory image.** Put it in `<case>\memory\` before `parse`: the `volatility` job runs with the other tools, nothing else changes. As run on [DFIR Madness Case 001](https://dfirmadness.com/the-stolen-szechuan-sauce/), with the memory image only (installation that already existed, updated with `.\install\02_Install-Tools.ps1 -Only Volatility,Pipeline`):
+
+```powershell
+#   extract DESKTOP-SDN1RPT.mem to C:\Sleuthline\cases\test02\memory\
+New-Item -ItemType Directory -Force C:\Sleuthline\cases\test02\C            # empty: no KAPE collection in this case
+C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test02
+C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test02   # 11 minutes: 58 Volatility plugins
+C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test02   # about 1 minute
+C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test02   # 80 minutes, about 10 USD, no guidance
+```
+
+Details and results: **[Memory (Volatility 3)](#memory-volatility-3)**.
+
 ## Repository layout
 
 ```
@@ -98,6 +116,7 @@ Each step, what to look at between them and how to fill in the guidance file: **
     ├── sleuthline.ps1                   ← LAUNCHER: sleuthline.ps1 <step> <case>
     ├── 1_inventory\     inventory.py         collection inventory, coverage, integrity, gaps
     ├── 2_parsing\       orchestrator.py      runs the tools on the collection
+    │                    memory.py            Volatility 3 job (memory image)
     │                    sample_outputs.py    samples of the outputs (development aid)
     ├── 3_normalize\     normalize.py         loading into DuckDB: timeline, detections, hash lists
     ├── 4_analysis\      analyze.py           analysis agent (LLM)
@@ -217,7 +236,8 @@ C:\Sleuthline\cases\test01\
 ├── 2023-11-10T123304_CopyLog.csv
 ├── 2023-11-10T123304_SkipLog.csv
 ├── C\
-└── LongFileNames\
+├── LongFileNames\
+└── memory\              optional: the memory image of the same machine (one image)
 ```
 
 **Dates of the copy.** Copying the collection to the VM can give some files the date of the copy: on Lab 1, LNK files appeared in the timeline with the date of the analysis day. Say so in the guidance file (step 5) so that the agent treats those dates as copy artifacts, not evidence.
