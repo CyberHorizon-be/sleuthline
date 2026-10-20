@@ -16,6 +16,7 @@
                        Hindsight (Chrome/Edge), bmc-tools (RDP bitmap cache)
       Frameworks     : Dissect (IE/legacy Edge WebCache, scheduled tasks, Defender,
                        PowerShell, WER...), plaso (setupapi, PCA), odl.py (OneDrive)
+      Memory         : Volatility 3 (memory image of the case, <case>\memory\)
       Optional       : KAPE (to be provided as a zip, download requires registration)
       Pipeline       : deploys <repository>\pipeline\ (inventory, orchestrator, normalization,
                        analysis agent, parser registry, complementary RECmd batch
@@ -35,7 +36,7 @@
 .PARAMETER Only
     Limits the installation to some tools. Values: EZTools, Hayabusa, Chainsaw,
     Sigma, Zircolite, LogFileParser, SIDR, BitsParser, WMIForensics, Hindsight,
-    BmcTools, Dissect, Plaso, OneDriveODL, KAPE, Pipeline.
+    BmcTools, Dissect, Plaso, OneDriveODL, Volatility, KAPE, Pipeline.
 
 .PARAMETER KapeZip
     Path to kape.zip (downloaded manually from the Kroll website).
@@ -69,7 +70,7 @@ param(
     [switch]$Force,
     [ValidateSet('EZTools', 'Hayabusa', 'Chainsaw', 'Sigma', 'Zircolite', 'LogFileParser',
                  'SIDR', 'BitsParser', 'WMIForensics', 'Hindsight', 'BmcTools',
-                 'Dissect', 'Plaso', 'OneDriveODL', 'KAPE', 'Pipeline')]
+                 'Dissect', 'Plaso', 'OneDriveODL', 'Volatility', 'KAPE', 'Pipeline')]
     [string[]]$Only,
     [string]$KapeZip,
     [string]$GitHubToken = $env:GITHUB_TOKEN,
@@ -806,6 +807,42 @@ try {
         $r.executables['python'] = $vpy
         $r.executables['odl'] = $main.FullName
         if ((Invoke-Native $vpy @($main.FullName, '-h')) -ne 0) { throw 'odl.py -h fails' }
+    }
+
+    # ======================================================================
+    # 14b. Volatility 3 - memory image of the case (job "volatility" of the orchestrator)
+    #      [full] extras: yara-python and capstone, needed by mftscan, malfind (disassembly)
+    #      and the system call plugins. Windows symbols are downloaded from the Microsoft symbol
+    #      server at the first analysis of a Windows build (cached in tools\volatility\symbols).
+    # ======================================================================
+    $volDir = Join-Path $ToolsDir 'volatility'
+    Invoke-ToolInstall 'Volatility' 'Volatility 3 (memory)' 'frameworks' $false $volDir {
+        param($r)
+        if ($script:Lock -and -not $script:Lock.venvs.PSObject.Properties['volatility3']) {
+            throw 'Volatility 3 is not in the lock file: install it without -Locked (then export a new lock)'
+        }
+        foreach ($d in 'symbols', 'cache') { New-Item -ItemType Directory -Force -Path (Join-Path $volDir $d) | Out-Null }
+        try {
+            $vpy = New-ToolVenv 'volatility3' @('volatility3[full]')
+        } catch {
+            $vpy = New-ToolVenv 'volatility3' @('volatility3')
+            $r.status = 'WARN'
+            $r.notes += 'Installed without the [full] extras (yara-python / capstone): mftscan, the system call plugins and the malfind disassembly will fail'
+        }
+        $vol = Join-Path (Split-Path $vpy) 'vol.exe'
+        if (-not (Test-Path $vol)) { throw 'vol.exe not found after pip install volatility3' }
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try { $help = (& $vol -h 2>&1 | Out-String) } finally { $ErrorActionPreference = $prevEap }
+        $needed = 'windows.info.Info', 'windows.pslist.PsList', 'windows.netscan.NetScan', 'windows.malware.malfind.Malfind'
+        $missing = @($needed | Where-Object { $help -notmatch [regex]::Escape($_) })
+        if ($missing.Count -eq $needed.Count) { throw 'vol -h lists none of the expected plugins' }
+        if ($missing) { $r.status = 'WARN'; $r.notes += "Plugins missing from this version: $($missing -join ', ')" }
+        Set-Content -Path (Join-Path $volDir 'plugins.txt') -Value $help -Encoding UTF8
+        $ver = & $vpy -m pip show volatility3 2>$null | Select-String '^Version:' | ForEach-Object { ($_ -split ':\s*')[1] }
+        $r.version = "volatility3 $ver"; $r.source_url = 'https://pypi.org/project/volatility3/'
+        $r.executables['vol'] = $vol
+        $r.executables['python'] = $vpy
+        $r.notes += 'Symbols downloaded at the first analysis of each Windows build (msdl.microsoft.com); list of plugins: tools\volatility\plugins.txt'
     }
 
     # ======================================================================

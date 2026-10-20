@@ -20,6 +20,7 @@ local to the machine, ignored by git).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -41,6 +42,7 @@ import inventory  # noqa: E402
 import llm  # noqa: E402
 import normalize  # noqa: E402
 import orchestrator  # noqa: E402
+import memory  # noqa: E402
 
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
@@ -546,6 +548,142 @@ class TestGuards(unittest.TestCase):
         out = agent.compact_messages(msgs)
         self.assertTrue(all(m["content"].count(agent.untrusted.close) == 1 for m in out))
         self.assertTrue(all(len(m["content"]) < 700 for m in out))
+
+
+# ------------------------------------------------------------------------------------------
+# Memory: Volatility 3 job (fake "vol" with the output format of Volatility's JSON renderer)
+# ------------------------------------------------------------------------------------------
+FAKE_VOL = r"""
+import json, os, sys
+plugin, image = sys.argv[-1], sys.argv[sys.argv.index("-f") + 1]
+assert os.path.isfile(image), image
+assert sys.argv[1:4] == ["-q", "-r", "json"], sys.argv
+if os.environ.get("FAKE_VOL_FAIL") == plugin:
+    print("Unsatisfied requirement plugins.Info.kernel.layer_name:")
+    sys.exit(1)
+rows = {
+ "windows.info.Info": [{"Variable": "NtBuildLab", "Value": "19041.1.amd64fre", "__children": []},
+                       {"Variable": "SystemTime", "Value": "2023-11-10 12:30:00+00:00", "__children": []}],
+ "windows.pslist.PsList": [{"PID": 2196, "PPID": 1088, "ImageFileName": "pscp.exe", "Threads": 3, "Handles": 90,
+                            "SessionId": 1, "Wow64": False, "CreateTime": "2023-11-10T11:03:09+00:00", "ExitTime": None,
+                            "File output": "Disabled", "__children": []}],
+ "windows.pstree.PsTree": [{"PID": 1088, "PPID": 2432, "ImageFileName": "powershell.exe", "Cmd": "powershell",
+                            "Path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                            "__children": [{"PID": 2196, "PPID": 1088, "ImageFileName": "pscp.exe", "Cmd": "C:\\Payloads\\pscp.exe",
+                                            "Path": "C:\\Payloads\\pscp.exe",
+                                            "__children": [{"PID": 7324, "PPID": 2196, "ImageFileName": "explorer.exe",
+                                                            "Cmd": "explorer.exe", "Path": "C:\\Windows\\explorer.exe", "__children": []}]}]}],
+ "windows.netscan.NetScan": [{"Offset": "0x1", "Proto": "TCPv4", "LocalAddr": "10.0.0.124", "LocalPort": 50009,
+                              "ForeignAddr": "10.0.0.12", "ForeignPort": 8080, "State": "ESTABLISHED", "PID": 7324,
+                              "Owner": "explorer.exe", "Created": "2023-11-10T11:03:10+00:00", "__children": []}],
+ "windows.malware.malfind.Malfind": [{"PID": 7324, "Process": "explorer.exe", "Protection": "PAGE_EXECUTE_READWRITE",
+                                      "Hexdump": "4d 5a 90 00", "Disasm": "dec ebp", "__children": []}],
+}.get(plugin, [])
+print()
+print(json.dumps(rows, indent=2))
+"""
+
+
+def build_memory_case(d: Path, fail: str | None = None):
+    case = d / "case"
+    (case / "raw" / "C").mkdir(parents=True)
+    (case / "memory").mkdir()
+    image = case / "memory" / "DESKTOP.raw"
+    image.write_bytes(b"\x00" * 4096 + b"MEMORY")
+    vol = d / "vol.py"
+    vol.write_text(FAKE_VOL, encoding="utf-8")
+    inv = {"summary": {"collection_root": str(case / "raw")}, "files": []}
+    manifest = {"tools": [{"name": "Volatility 3 (memory)", "key": "Volatility", "status": "OK",
+                           "executables": {"vol": str(vol)}}]}
+    out = case / "parsed"
+    out.mkdir()
+    images = memory.find_images(case)
+    ctx = orchestrator.Context(case, inv, manifest, out, images)
+    return case, image, ctx
+
+
+class TestMemory(unittest.TestCase):
+    def test_flatten_tree(self):
+        rows = [{"PID": 1, "__children": [{"PID": 2, "__children": [{"PID": 3, "__children": []}]}, {"PID": 4, "__children": []}]}]
+        flat = list(memory.flatten(rows))
+        self.assertEqual([(r["PID"], r["TreeDepth"]) for r in flat], [(1, 0), (2, 1), (3, 2), (4, 1)])
+        self.assertTrue(all("__children" not in r for r in flat))
+
+    def test_plugins_and_mappings(self):
+        names = [p.name for p in memory.PLUGINS]
+        self.assertEqual(names[0], "windows.info.Info")
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len({p.table for p in memory.PLUGINS}), len(names))
+        for bad in memory.EXCLUDED + ["windows.hashdump", "lsadump", "cachedump", "truecrypt", "dumpfiles", "pedump"]:
+            self.assertFalse(any(bad.lower() in n.lower() for n in names), bad)
+        sources = json.loads((PIPE / "config" / "normalize_map.json").read_text(encoding="utf-8"))["sources"]
+        by_id = {s["id"]: s for s in sources}
+        for e in memory.normalize_map_entries():
+            self.assertEqual(by_id.get(e["id"]), e, e["id"])          # normalize_map.json in sync with memory.py
+
+    def test_find_images(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d)
+            self.assertEqual(memory.find_images(case), [])
+            (case / "memory").mkdir()
+            (case / "memory" / "notes.txt").write_text("x")
+            (case / "memory" / "host.MEM").write_bytes(b"x")
+            self.assertEqual([p.name for p in memory.find_images(case)], ["host.MEM"])
+            self.assertEqual(memory.find_images(case, [Path("D:/other.raw")]), [Path("D:/other.raw")])
+
+    def test_volatility_job_then_normalization(self):
+        with tempfile.TemporaryDirectory() as d:
+            case, image, ctx = build_memory_case(Path(d))
+            job = next(j for j in orchestrator.JOBS if j.id == "volatility")
+            self.assertEqual(ctx.files_by_art["memory_image"][0]["rel_path"], str(image))
+            rec = orchestrator.run_job(job, ctx, force=True, dry_run=False)
+            self.assertEqual(rec["status"], "ok", [s for s in rec["steps"] if s["status"] != "ok"][:2])
+            self.assertEqual(rec["inputs"], [str(image)])
+            self.assertEqual(len(rec["steps"]), len(memory.PLUGINS) + 1)
+            self.assertEqual([s["label"] for s in rec["steps"][1:]], [p.name for p in memory.PLUGINS])   # order kept
+            self.assertTrue(all(s["cmd"][-1] == s["label"] for s in rec["steps"][1:]))                    # command traced
+            out = ctx.out / "volatility"
+            img = json.loads((out / "memory_image.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual(img["sha256"], hashlib.sha256(image.read_bytes()).hexdigest().upper())
+            tree = [json.loads(l) for l in (out / "windows.pstree.PsTree.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([(r["PID"], r["TreeDepth"]) for r in tree], [(1088, 0), (2196, 1), (7324, 2)])
+            (ctx.out / "volatility" / "_status.json").write_text(json.dumps(rec), encoding="utf-8")
+            # Normalization: raw tables, timeline rows, evidence = the image
+            self.assertEqual(normalize.main([str(case), "--no-live"]), 0)
+            con = duckdb.connect(str(case / "db" / "case.duckdb"), read_only=True)
+            self.assertEqual(con.execute("SELECT count(*) FROM raw.vol_pstree").fetchone()[0], 3)
+            self.assertEqual(con.execute("SELECT sha256 FROM raw.vol_image").fetchone()[0], img["sha256"])
+            tl = con.execute("SELECT artifact, ts_desc, path, evidence, mapping FROM timeline WHERE artifact LIKE 'Memory%' "
+                             "ORDER BY ts").fetchall()
+            self.assertIn(("Memory: process list (pslist)", "process created (memory, pslist)", "pscp.exe", str(image), "validated"), tl)
+            self.assertTrue(any(t[0].startswith("Memory: network") for t in tl))
+            con.close()
+            # Evidence policy: the whole memory image is ONE source, distinct from the disk
+            ev_mem = [{"ref": "volatility/windows.pslist.PsList.jsonl#1", "artifact": "Memory: process list (pslist)", "evidence": str(image)},
+                      {"ref": "volatility/windows.netscan.NetScan.jsonl#1", "artifact": "Memory: network connections (netscan)", "evidence": str(image)},
+                      {"ref": "volatility/windows.malware.malfind.Malfind.jsonl#1", "table": "raw.vol_malfind"}]
+            self.assertEqual(guards.independent_sources(ev_mem), ["memory"])
+            P = guards.load_policy(None)
+            self.assertEqual(guards.assess("confirmed", ev_mem, P, "critical")[0], "probable")
+            disk = {"ref": "pf#1", "artifact": "Prefetch", "evidence": "C:\\Windows\\Prefetch\\PSCP.EXE-1.pf"}
+            self.assertEqual(guards.assess("confirmed", ev_mem[:1] + [disk], P, "critical")[0], "confirmed")
+
+    def test_preliminary_failure_stops_the_plugins(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["FAKE_VOL_FAIL"] = "windows.info.Info"
+            try:
+                case, image, ctx = build_memory_case(Path(d))
+                job = next(j for j in orchestrator.JOBS if j.id == "volatility")
+                rec = orchestrator.run_job(job, ctx, force=True, dry_run=False)
+            finally:
+                os.environ.pop("FAKE_VOL_FAIL")
+            statuses = [s["status"] for s in rec["steps"]]
+            self.assertEqual(statuses[:2], ["ok", "failed"])                 # hash ok, windows.info failed
+            self.assertTrue(all(st == "skipped" for st in statuses[2:]))
+            self.assertEqual(rec["status"], "partial")
+            log = (ctx.out / "volatility" / "_run.log").read_text(encoding="utf-8")
+            self.assertIn("Unsatisfied requirement", log)
+            self.assertFalse((ctx.out / "volatility" / "windows.pslist.PsList.jsonl").exists())
 
 
 # ------------------------------------------------------------------------------------------

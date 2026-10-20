@@ -42,7 +42,12 @@ def source_key(e: dict) -> str:
     same underlying source and do not corroborate each other:
       - event logs: the .evtx file (a Hayabusa/Chainsaw/Zircolite detection on Security.evtx and
         the 4688 event itself are ONE source);
+      - memory: the memory image as a whole (pslist, netscan and malfind of the same image are ONE
+        source; the image and a disk artifact are two);
       - other artifacts: the artifact type (Prefetch, Amcache, MFT, a registry artifact...)."""
+    art0 = str(e.get("artifact") or e.get("table") or "").strip().lower()
+    if (art0.startswith(("memory", "raw.vol_")) or str(e.get("ref", "")).startswith("volatility/")):
+        return "memory"
     ev = str(e.get("evidence") or "")
     base = _basename(ev) if ev else ""
     if base.endswith(".evtx"):
@@ -185,5 +190,5 @@ def evidence_policy_text(policy: dict) -> str:
 - answer_question: references are mandatory unless confidence = undetermined.
 - A {sev} finding is kept as "confirmed" only with at least {policy['min_independent_sources']} independent sources
   (a detection on an event log and the event itself are the same source; Prefetch, Amcache, 4688, Sysmon are different
-  sources). Otherwise it is recorded as "probable": use add_evidence to add corroborating references from another source.
+  sources; everything from the memory image is one source, distinct from the disk artifacts). Otherwise it is recorded as "probable": use add_evidence to add corroborating references from another source.
 - Evidence from outputs mapped automatically (mapping = 'auto') {'can' if policy['auto_mapping_can_confirm'] else 'cannot'} confirm a conclusion on its own: check the raw record and cite validated sources."""

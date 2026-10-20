@@ -20,12 +20,14 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization
 
 **Tested on** [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1), a public exercise (Windows 10 workstation compromised with a Meterpreter agent), in a blind run with only the 8 questions of the exercise: **about 50 minutes** from the KAPE collection to the Word report (parsing 27 min, normalization 1 min, analysis 22 min) and **7.23 USD** of Claude Opus 5.5 API usage (amount billed, Claude Console). The agent answered all 8 questions with their evidence (see [the walkthrough](#analyzing-a-case-step-by-step)). **The generated report:** [PDF](docs/examples/report_threat_hunting_lab1.pdf) · [Word](docs/examples/report_threat_hunting_lab1.docx).
 
+**Memory tested on** [DFIR Madness Case 001 "The Stolen Szechuan Sauce"](https://dfirmadness.com/the-stolen-szechuan-sauce/), with the memory image of the workstation only (`DESKTOP-SDN1RPT`, Windows 10, 2 GB), in a blind run without guidance: parsing 11 min (all 58 Volatility plugins OK), normalization 1 min, analysis 80 min, **about 10 USD** of Claude Opus 5.5 API usage. From memory alone, the agent found the RDP logon of the domain Administrator, the malware `coreupdater.exe` and its auto-start service, its download with Edge, the code injected into `spoolsv.exe` with access to `lsass.exe`, and the two sessions to the C2 `203.78.103.109:443` (see [Memory](#memory-volatility-3)).
+
 > Sleuthline assists an analyst; it is not an automated expert. The report must be reviewed and validated by a qualified analyst before any distribution or decision (see [Limitations and responsibility](#limitations-and-responsibility)).
 
 ## Requirements
 
 - Windows 10/11 or Server 2019+ **64-bit**, dedicated and isolated VM
-- Internet access (github.com, api.github.com, pypi.org, download.ericzimmermanstools.com, python.org)
+- Internet access (github.com, api.github.com, pypi.org, download.ericzimmermanstools.com, python.org; msdl.microsoft.com for the Windows symbols used by Volatility 3, at the first analysis of each Windows build)
 - 100 GB of free space recommended
 - PowerShell started **as administrator**
 - KAPE (optional, only to collect): download it yourself from Kroll and drop `kape.zip` in `install\`
@@ -56,7 +58,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 37 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 42 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -157,6 +159,7 @@ What is installed:
 │   ├── dissect\            Dissect (venv): WebCache, tasks, Defender, PowerShell, WER...
 │   ├── plaso\              plaso (venv): setupapi, PCA
 │   ├── OneDriveODL\        odl.py (venv): OneDrive logs
+│   ├── volatility\         Volatility 3 (venv volatility3): symbols\ and cache\ of the memory analysis
 │   ├── _help\              online help of each installed tool (syntax reference)
 │   └── tools-manifest.json ← version, URL and SHA-256 of each tool
 ├── pipeline\               deployed copy of <repository>\pipeline (do not edit here) + VERSION.json
@@ -200,7 +203,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (37 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (42 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```
@@ -310,7 +313,7 @@ dates of 2026-10-19 are copy artefacts, not evidence.
 C:\Sleuthline\pipeline\sleuthline.ps1 analyze C:\Sleuthline\cases\test01
 ```
 
-The only paid step. The agent works through the 12 steps of `PLAYBOOK.md` (context, detections, execution, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
+The only paid step. The agent works through the steps of `PLAYBOOK.md` (context, detections, execution, memory if an image was provided, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
 
 On Lab 1: **22 minutes** for the 12 steps, 153 model calls, 9.0 million input tokens of which 93 % read back from the prompt cache, 124 000 output tokens: **7.23 USD billed** (Claude Console, `check` included), in line with the Claude Opus 5.5 list prices (cache read 0.20, cache write 5, output 20 USD per million tokens).
 
@@ -338,7 +341,7 @@ C:\Sleuthline\pipeline\sleuthline.ps1 all C:\Sleuthline\cases\<case>   # 1 -> 2 
 | Command | Step |
 |---|---|
 | `sleuthline.ps1 inventory <case>` | 1. inventory, coverage and integrity |
-| `sleuthline.ps1 parse <case> [--only job --force]` | 2. parsing |
+| `sleuthline.ps1 parse <case> [--only job --force] [--memory <image>]` | 2. parsing (and the memory image, if any) |
 | `sleuthline.ps1 normalize <case>` | 3. DuckDB database |
 | `sleuthline.ps1 analyze <case> [--profile ...]` | 4. agent + Word report |
 | `sleuthline.ps1 ask <case> "text"` | one-off question to the agent |
@@ -370,6 +373,31 @@ How it works:
 - **Dissect** excludes by default the plugins that extract secrets (passwords, LSA, SAM, DPAPI).
 - **Registry.** RECmd runs two batches on every hive: `Kroll_Batch.reb` (job `recmd_kroll`) then `pipeline\config\recmd\Sleuthline_Complement.reb` (job `recmd_complement`), which adds keys missing from Kroll: EMDMgmt (volume serial numbers), Active Setup, Print Monitors / Processors, BootExecute / SetupExecute / Execute, Compatibility Assistant Store (PCA).
 - **Internal parsing** (job `native`, only for text formats without a recognized tool, see `parser_registry.json`): Startup folders, hosts, Wi-Fi profiles (`Wlansvc\Profiles`, Wi-Fi key never extracted), `.rdp` files including `Default.rdp` (passwords excluded), Panther logs (`setupact.log`, `setuperr.log`). `unattend.xml` is not parsed (possible passwords).
+
+### Memory (Volatility 3)
+
+A memory image of the same machine can be analyzed with the collection. Put it in `<case>\memory\` (`.raw`, `.mem`, `.vmem`, `.dmp`, `.img`, `.bin`, `.lime`; one image per case), or give its path: `sleuthline.ps1 parse <case> --memory D:\dumps\host.raw`. The `parse` step then runs the `volatility` job; nothing else changes.
+
+- **The image is evidence.** It gets the read-only attribute, and its SHA-256 is computed before anything else (`parsed\volatility\memory_image.jsonl`, table `raw.vol_image`).
+- **`windows.info` first.** It identifies the kernel and downloads its symbols from the Microsoft symbol server (internet access needed the first time a Windows build is analyzed; cached in `<root>\tools\volatility\symbols\`). If it fails (image not recognized), the other plugins are not run and the job is `partial`.
+- **58 plugins, 3 at a time** (`pipeline\2_parsing\memory.py`): processes (pslist, psscan, pstree, psxview, cmdline, envars, SIDs, privileges, sessions), DLLs, modules and drivers, handles, mutexes, file objects and MFT records in memory, network (netscan, netstat), injection and evasion (malfind, hollowing, ghosting, PEB masquerading, suspicious threads, direct / indirect system calls, ETW patching, hooks), services (svcscan, svcdiff), registry (UserAssist, scheduled tasks, Amcache, ShimCache), console history (consoles, cmdscan). Every command is traced in `jobs.jsonl`.
+- **Never run:** plugins that extract secrets (`hashdump`, `lsadump`, `cachedump`, `truecrypt`) or files (`dumpfiles`, `pedump`, `memmap --dump`), and plugins that need a parameter (`strings`, `yarascan`, `vadregexscan`).
+- **In the database:** one table per plugin (`raw.vol_pslist`, `raw.vol_netscan`, `raw.vol_malfind`...); tree outputs are flattened with a `TreeDepth` column. Process creations, network endpoints, DLL loads and the other timestamped records go into the timeline with an artifact name starting with `Memory:`.
+- **Analysis:** step 4 of the playbook examines the memory and confronts it with the disk. For the evidence policy, everything from the memory image counts as **one** source, distinct from the disk artifacts: a critical finding is `confirmed` with a memory record and a disk record, not with two memory records.
+
+**As tested on Case 001 (memory image only, no KAPE collection).** On an installation that already existed, Volatility 3 and the new pipeline were installed with `.\install\02_Install-Tools.ps1 -Only Volatility,Pipeline` (Volatility 3 2.28.2). The `inventory` step needs a KAPE collection: for a case with only a memory image, an empty folder `C` in the case is enough.
+
+```powershell
+New-Item -ItemType Directory -Force C:\Sleuthline\cases\test02\memory       # then extract DESKTOP-SDN1RPT.mem into it
+New-Item -ItemType Directory -Force C:\Sleuthline\cases\test02\C            # empty: no KAPE collection in this case
+C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test02   # 0 files: expected
+C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test02   # 11 minutes: only the volatility job runs
+C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test02   # 1 minute: 45 vol_* tables, 177,718 timeline rows
+C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test02   # 80 minutes, about 10 USD, no guidance
+```
+
+- **Parsing:** the SHA-256 of the image, then `windows.info` (38 s, symbols downloaded) and the 58 plugins, all `ok`. The slowest: `svcdiff`, `mftscan`, `svcscan` (2 to 3 minutes each). 15 plugins found nothing (e.g. no hollowing or ghosting in this case; `userassist` and `amcache` because these registry keys were incomplete in memory).
+- **Analysis:** 13 steps, 242 model calls, 26 findings and 17 IOCs. The responder's tools (FTK Imager, msinfo32, autorunsc) and the Microsoft traffic were ruled out as noise. Every high and critical finding is `probable`, not `confirmed`: with a memory image alone, all the evidence comes from one source. What needs the disk (the source address of the RDP logon, proof of exfiltration, event logs) is reported as not determinable.
 
 ### 3. Normalization into DuckDB
 
@@ -412,7 +440,7 @@ The database is fully rebuilt at each run (written to a temporary file, then rep
 C:\Sleuthline\pipeline\sleuthline.ps1 analyze "C:\Sleuthline\cases\<case>"   # full analysis + Word report
 ```
 
-**Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. persistence; 5. accounts and authentication; 6. remote access and lateral movement; 7. file activity; 8. web browsing; 9. anti-forensics; 10. exfiltration; 11. incident timeline; 12. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely.
+**Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. memory (RAM), only if a memory image was analyzed; 5. persistence; 6. accounts and authentication; 7. remote access and lateral movement; 8. file activity; 9. web browsing; 10. anti-forensics; 11. exfiltration; 12. incident timeline; 13. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely.
 
 **Agent tools.** SQL query, search, time window, evidence detail; it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
 
@@ -491,7 +519,7 @@ The fast tests (about ten seconds) cover the SQL safeguards of the agent, the ev
 
 ## Artifact coverage: accepted limits
 
-- **Not covered, out of scope:** memory, volume shadow copies (VSS), pagefile / hiberfil, PST / OST, Teams / Slack LevelDB databases, WSL, DPAPI (deliberately excluded: secrets).
+- **Not covered, out of scope:** volume shadow copies (VSS), pagefile / hiberfil, PST / OST, Teams / Slack LevelDB databases, WSL, DPAPI (deliberately excluded: secrets).
 - **Pending validation:** OneDrive `SyncEngineDatabase.db`. No SQLECmd map exists; the reference tool, OneDriveExplorer, is proposed in `parser_registry.json` but not installed (analyst validation required by `POLICY_parsers.md`). The inventory reports the database as NOT COVERED. Meanwhile: ODL logs (odl.py), `$MFT` / `$J`.
 - **Windows 11 Notepad tabs:** Dissect plugin `windowsnotepad.tabs`. Collect with the KAPE target `WindowsNotepad` if it is not included in the triage target used.
 
