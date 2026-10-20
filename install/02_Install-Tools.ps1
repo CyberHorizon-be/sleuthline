@@ -948,8 +948,31 @@ try {
                 # not as an .exe: it is run with the Python of its venv
                 $su = Join-Path (Split-Path $vpy) 'suricata-update'
                 if (-not (Test-Path $su)) { throw "suricata-update not found in its venv ($su)" }
-                $suArgs = @('--suricata-conf', $yaml.FullName, '-D', (Join-Path $suDir 'update'), '-o', $rulesDir, '--no-test', '--no-reload')
-                if ($ver) { $suArgs = @('--suricata-version', $ver) + $suArgs }
+                if (-not $ver) { throw 'Suricata version unknown (name of the MSI)' }
+                # On Windows, suricata-update cannot download: it copies an open temporary file
+                # ("Failed to copy file: Permission denied"). The ET Open archive is downloaded here,
+                # into the cache of suricata-update (<data>\update\cache\<md5 of the URL>-<name>),
+                # and suricata-update runs --offline on it.
+                $etUrl = "https://rules.emergingthreats.net/open/suricata-$ver/emerging.rules.tar.gz"
+                $md5 = -join ([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($etUrl)) | ForEach-Object { $_.ToString('x2') })
+                $suData = Join-Path $suDir 'update'
+                $etCache = Join-Path $suData 'update\cache'
+                New-Item -ItemType Directory -Force -Path $etCache | Out-Null
+                $etFile = Join-Path $etCache "$md5-emerging.rules.tar.gz"
+                # ET Open publishes one folder per Suricata version; if this exact version has none,
+                # the folder of the same minor version (x.y.0) is used
+                $parts = $ver.Split('.')
+                $etTried = @()
+                foreach ($u in @($etUrl, "https://rules.emergingthreats.net/open/suricata-$($parts[0]).$($parts[1]).0/emerging.rules.tar.gz") | Select-Object -Unique) {
+                    try {
+                        Write-Info "Downloading: $u"
+                        Invoke-WebRequest -Uri $u -OutFile $etFile -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }
+                        $r.downloads[$u] = (Get-FileHash $etFile -Algorithm SHA256).Hash
+                        $etTried = $null; break
+                    } catch { $etTried += "$u ($($_.Exception.Message))" }
+                }
+                if ($etTried) { throw "ET Open download failed: $($etTried -join '; ')" }
+                $suArgs = @('--suricata-version', $ver, '--suricata-conf', $yaml.FullName, '-D', $suData, '-o', $rulesDir, '--no-test', '--no-reload', '--offline')
                 if ((Invoke-Native $vpy (@($su) + $suArgs)) -ne 0) { throw 'suricata-update failed' }
                 $r.executables['suricata_update'] = $su
             } catch {
