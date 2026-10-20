@@ -20,6 +20,8 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──> 3. normalization
 
 **Tested on** [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1), a public exercise (Windows 10 workstation compromised with a Meterpreter agent), in a blind run with only the 8 questions of the exercise: **about 50 minutes** from the KAPE collection to the Word report (parsing 27 min, normalization 1 min, analysis 22 min) and **7.23 USD** of Claude Opus 5.5 API usage (amount billed, Claude Console). The agent answered all 8 questions with their evidence (see [the walkthrough](#analyzing-a-case-step-by-step)). **The generated report:** [PDF](docs/examples/report_threat_hunting_lab1.pdf) · [Word](docs/examples/report_threat_hunting_lab1.docx).
 
+**Memory tested on** [DFIR Madness Case 001 "The Stolen Szechuan Sauce"](https://dfirmadness.com/the-stolen-szechuan-sauce/), with the memory image of the workstation only (`DESKTOP-SDN1RPT`, Windows 10, 2 GB), in a blind run without guidance: parsing 11 min (all 58 Volatility plugins OK), normalization 1 min, analysis 80 min, **about 10 USD** of Claude Opus 5.5 API usage. From memory alone, the agent found the RDP logon of the domain Administrator, the malware `coreupdater.exe` and its auto-start service, its download with Edge, the code injected into `spoolsv.exe` with access to `lsass.exe`, and the two sessions to the C2 `203.78.103.109:443` (see [Memory](#memory-volatility-3)).
+
 > Sleuthline assists an analyst; it is not an automated expert. The report must be reviewed and validated by a qualified analyst before any distribution or decision (see [Limitations and responsibility](#limitations-and-responsibility)).
 
 ## Requirements
@@ -383,6 +385,20 @@ A memory image of the same machine can be analyzed with the collection. Put it i
 - **In the database:** one table per plugin (`raw.vol_pslist`, `raw.vol_netscan`, `raw.vol_malfind`...); tree outputs are flattened with a `TreeDepth` column. Process creations, network endpoints, DLL loads and the other timestamped records go into the timeline with an artifact name starting with `Memory:`.
 - **Analysis:** step 4 of the playbook examines the memory and confronts it with the disk. For the evidence policy, everything from the memory image counts as **one** source, distinct from the disk artifacts: a critical finding is `confirmed` with a memory record and a disk record, not with two memory records.
 
+**As tested on Case 001 (memory image only, no KAPE collection).** On an installation that already existed, Volatility 3 and the new pipeline were installed with `.\install\02_Install-Tools.ps1 -Only Volatility,Pipeline` (Volatility 3 2.28.2). The `inventory` step needs a KAPE collection: for a case with only a memory image, an empty folder `C` in the case is enough.
+
+```powershell
+New-Item -ItemType Directory -Force C:\Sleuthline\cases\test02\memory       # then extract DESKTOP-SDN1RPT.mem into it
+New-Item -ItemType Directory -Force C:\Sleuthline\cases\test02\C            # empty: no KAPE collection in this case
+C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test02   # 0 files: expected
+C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test02   # 11 minutes: only the volatility job runs
+C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test02   # 1 minute: 45 vol_* tables, 177,718 timeline rows
+C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test02   # 80 minutes, about 10 USD, no guidance
+```
+
+- **Parsing:** the SHA-256 of the image, then `windows.info` (38 s, symbols downloaded) and the 58 plugins, all `ok`. The slowest: `svcdiff`, `mftscan`, `svcscan` (2 to 3 minutes each). 15 plugins found nothing (e.g. no hollowing or ghosting in this case; `userassist` and `amcache` because these registry keys were incomplete in memory).
+- **Analysis:** 13 steps, 242 model calls, 26 findings and 17 IOCs. The responder's tools (FTK Imager, msinfo32, autorunsc) and the Microsoft traffic were ruled out as noise. Every high and critical finding is `probable`, not `confirmed`: with a memory image alone, all the evidence comes from one source. What needs the disk (the source address of the RDP logon, proof of exfiltration, event logs) is reported as not determinable.
+
 ### 3. Normalization into DuckDB
 
 ```powershell
@@ -503,7 +519,7 @@ The fast tests (about ten seconds) cover the SQL safeguards of the agent, the ev
 
 ## Artifact coverage: accepted limits
 
-- **Not covered, out of scope:** memory, volume shadow copies (VSS), pagefile / hiberfil, PST / OST, Teams / Slack LevelDB databases, WSL, DPAPI (deliberately excluded: secrets).
+- **Not covered, out of scope:** volume shadow copies (VSS), pagefile / hiberfil, PST / OST, Teams / Slack LevelDB databases, WSL, DPAPI (deliberately excluded: secrets).
 - **Pending validation:** OneDrive `SyncEngineDatabase.db`. No SQLECmd map exists; the reference tool, OneDriveExplorer, is proposed in `parser_registry.json` but not installed (analyst validation required by `POLICY_parsers.md`). The inventory reports the database as NOT COVERED. Meanwhile: ODL logs (odl.py), `$MFT` / `$J`.
 - **Windows 11 Notepad tabs:** Dissect plugin `windowsnotepad.tabs`. Collect with the KAPE target `WindowsNotepad` if it is not included in the triage target used.
 

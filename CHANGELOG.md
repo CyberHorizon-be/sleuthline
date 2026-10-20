@@ -1,12 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.9.5 (2026-10-20)
 
 - **Memory analysis with Volatility 3.** A memory image in `<case>\memory\` (or `parse <case> --memory <path>`) is analyzed by the new `volatility` job: SHA-256 of the image, `windows.info`, then 58 plugins 3 at a time (processes, injection, network, drivers, services, registry, consoles...). No secret or file extraction. One table per plugin (`raw.vol_*`), timestamped records in the timeline (`Memory: ...`).
 - Installer: Volatility 3 (`volatility3[full]` in its own venv, `-Only Volatility`).
 - Playbook: new step 4 *Memory (RAM)*, which confronts memory and disk, plus memory checks in the execution, remote access and anti-forensics steps. Steps after it are renumbered (13 steps).
 - Evidence policy: everything from the memory image counts as one source, distinct from the disk artifacts.
 - Orchestrator: jobs can run their steps in parallel after preliminary steps (used by the Volatility plugins).
+- Tested on DFIR Madness Case 001 (memory image of the workstation only, blind run): all 58 plugins OK in 11 minutes, analysis 80 minutes, about 10 USD. README: the test, its commands and results.
 - Tests: 42 tests, including the Volatility job end to end with a fake `vol` (JSON output, tree flattening, failure of `windows.info`), its normalization and the evidence policy.
 
 ## 0.9.2 (2026-10-19)
