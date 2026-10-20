@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.6 (2026-10-20)
+
+- **Network capture analysis with Suricata.** Captures in `<case>\pcap\` (or `parse <case> --pcap <file>`, repeatable) are analyzed by the new `suricata` job: SHA-256 of the captures, offline configuration derived from the shipped `suricata.yaml`, one Suricata run per capture. EVE output split by event type (`raw.suricata_*`), alerts in `detections`, flows / DNS / HTTP / TLS / files in the timeline.
+- Installer: Suricata (Windows MSI extracted, not installed; `-Only Suricata`, `-SuricataMsi <file>`) and ET Open rules through `suricata-update`; the rules folder is locked. `-InstallNpcap` installs Npcap (needed by `suricata.exe`, interactive installer).
+- Playbook: new step 5 *Network traffic (PCAP)*, plus network checks in the remote access and exfiltration steps (14 steps). Evidence policy: the captures count as one source.
+- Orchestrator: jobs run sequentially also honour their preliminary steps (used by the Suricata job).
+- Installer fixes found on Windows: `suricata-update` is run with the Python of its venv (it is a script, not an `.exe`), and the ET Open archive is downloaded by the installer, then `suricata-update` runs `--offline` (it cannot download on Windows: Permission denied on its temporary file).
+- Tested on DFIR Madness Case 001 (network capture only, blind run): parsing 12 s, 461 alerts, analysis 62 minutes, about 6 USD. README: the test, its commands and results; network captures in the introduction and the schema.
+- Tests: 48 tests, including the Suricata job end to end with EVE events recorded from a real Suricata run, its normalization and the evidence policy.
+
 ## 0.9.5 (2026-10-20)
 
 - **Memory analysis with Volatility 3.** A memory image in `<case>\memory\` (or `parse <case> --memory <path>`) is analyzed by the new `volatility` job: SHA-256 of the image, `windows.info`, then 58 plugins 3 at a time (processes, injection, network, drivers, services, registry, consoles...). No secret or file extraction. One table per plugin (`raw.vol_*`), timestamped records in the timeline (`Memory: ...`).

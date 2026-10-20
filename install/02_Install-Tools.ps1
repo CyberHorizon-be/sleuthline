@@ -17,6 +17,7 @@
       Frameworks     : Dissect (IE/legacy Edge WebCache, scheduled tasks, Defender,
                        PowerShell, WER...), plaso (setupapi, PCA), odl.py (OneDrive)
       Memory         : Volatility 3 (memory image of the case, <case>\memory\)
+      Network        : Suricata + suricata-update / ET Open rules (captures of the case, <case>\pcap\)
       Optional       : KAPE (to be provided as a zip, download requires registration)
       Pipeline       : deploys <repository>\pipeline\ (inventory, orchestrator, normalization,
                        analysis agent, parser registry, complementary RECmd batch
@@ -36,11 +37,21 @@
 .PARAMETER Only
     Limits the installation to some tools. Values: EZTools, Hayabusa, Chainsaw,
     Sigma, Zircolite, LogFileParser, SIDR, BitsParser, WMIForensics, Hindsight,
-    BmcTools, Dissect, Plaso, OneDriveODL, Volatility, KAPE, Pipeline.
+    BmcTools, Dissect, Plaso, OneDriveODL, Volatility, Suricata, KAPE, Pipeline.
 
 .PARAMETER KapeZip
     Path to kape.zip (downloaded manually from the Kroll website).
     Default: kape.zip placed in the same folder as this script (<repository>\install).
+
+.PARAMETER SuricataMsi
+    Path to a Suricata Windows installer (.msi) downloaded manually. Default: the latest
+    Suricata-<version>-<n>-64bit.msi of https://www.openinfosecfoundation.org/download/windows/.
+
+.PARAMETER InstallNpcap
+    The Windows build of Suricata needs wpcap.dll, provided by Npcap (a network driver). With this
+    switch, if suricata.exe does not start, the latest Npcap installer of https://npcap.com is
+    downloaded and started with WinPcap API-compatible mode: the Npcap free edition has no silent
+    install, so its installer window opens and must be completed. Without it, only a warning.
 
 .PARAMETER GitHubToken
     Optional GitHub token (avoids the 60 requests/hour limit of the API).
@@ -70,9 +81,11 @@ param(
     [switch]$Force,
     [ValidateSet('EZTools', 'Hayabusa', 'Chainsaw', 'Sigma', 'Zircolite', 'LogFileParser',
                  'SIDR', 'BitsParser', 'WMIForensics', 'Hindsight', 'BmcTools',
-                 'Dissect', 'Plaso', 'OneDriveODL', 'Volatility', 'KAPE', 'Pipeline')]
+                 'Dissect', 'Plaso', 'OneDriveODL', 'Volatility', 'Suricata', 'KAPE', 'Pipeline')]
     [string[]]$Only,
     [string]$KapeZip,
+    [string]$SuricataMsi,
+    [switch]$InstallNpcap,
     [string]$GitHubToken = $env:GITHUB_TOKEN,
     [switch]$Locked,
     [string]$LockFile
@@ -843,6 +856,143 @@ try {
         $r.executables['vol'] = $vol
         $r.executables['python'] = $vpy
         $r.notes += 'Symbols downloaded at the first analysis of each Windows build (msdl.microsoft.com); list of plugins: tools\volatility\plugins.txt'
+    }
+
+    # ======================================================================
+    # 14c. Suricata - network captures of the case (job "suricata" of the orchestrator)
+    #      The MSI is EXTRACTED (msiexec /a), not installed: no service, no driver, nothing in
+    #      Program Files. Rules: suricata-update (ET Open) in its own venv.
+    #      Live capture would need Npcap; reading capture files is all the pipeline does.
+    # ======================================================================
+    $suDir = Join-Path $ToolsDir 'suricata'
+    Invoke-ToolInstall 'Suricata' 'Suricata (network captures)' 'frameworks' $false $suDir {
+        param($r)
+        Reset-ToolDir $suDir
+        $le = Get-LockEntry
+        if ($SuricataMsi) {
+            if (-not (Test-Path $SuricataMsi)) { throw "Suricata installer not found: $SuricataMsi" }
+            $msi = (Resolve-Path $SuricataMsi).Path
+            $sha = (Get-FileHash $msi -Algorithm SHA256).Hash
+            $r.downloads[$msi] = $sha
+            $msiName = Split-Path $msi -Leaf
+        } else {
+            if ($le -and $le.downloads) {
+                $url = @($le.downloads.PSObject.Properties)[0].Name
+            } else {
+                $index = 'https://www.openinfosecfoundation.org/download/windows/'
+                $page = (Invoke-WebRequest -Uri $index -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }).Content
+                $names = [regex]::Matches($page, 'Suricata-(\d+)\.(\d+)\.(\d+)-(\d+)-64bit\.msi') |
+                    Sort-Object { [int]$_.Groups[1].Value }, { [int]$_.Groups[2].Value }, { [int]$_.Groups[3].Value }, { [int]$_.Groups[4].Value } |
+                    ForEach-Object { $_.Value } | Select-Object -Unique
+                if (-not $names) { throw "No Suricata-*-64bit.msi found on $index (use -SuricataMsi <file.msi>)" }
+                $url = $index + @($names)[-1]
+            }
+            $msiName = Split-Path $url -Leaf
+            $f = Save-File $url $msiName
+            $msi = $f.Path; $sha = $f.Sha256
+            $r.source_url = $url
+        }
+        $r.sha256 = $sha
+        $ver = if ($msiName -match 'Suricata-(\d+\.\d+\.\d+)') { $Matches[1] } else { $null }
+        $app = Join-Path $suDir 'app'
+        $p = Start-Process msiexec.exe -ArgumentList @('/a', "`"$msi`"", '/qn', "TARGETDIR=`"$app`"") -Wait -PassThru
+        if ($p.ExitCode -ne 0) { throw "msiexec /a (extraction) failed with code $($p.ExitCode)" }
+        $exe = Get-ChildItem $app -Recurse -Filter 'suricata.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $exe) { throw 'suricata.exe not found in the extracted installer' }
+        $yaml = Get-ChildItem $app -Recurse -Filter 'suricata.yaml' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $yaml) { throw 'suricata.yaml not found in the extracted installer' }
+        $r.version = "Suricata $ver"
+        $r.executables['suricata'] = $exe.FullName
+        $r.executables['suricata_yaml'] = $yaml.FullName
+        $buildInfo = {
+            $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+            try { $out = (& $exe.FullName --build-info 2>&1 | Out-String); $code = $LASTEXITCODE } finally { $ErrorActionPreference = $prevEap }
+            @{ Code = $code; Out = $out }
+        }
+        $b = & $buildInfo; $rc = $b.Code; $bi = $b.Out
+        # -1073741515 = 0xC0000135: a DLL is missing, wpcap.dll of Npcap (not shipped with Suricata)
+        if ($rc -ne 0 -and $InstallNpcap) {
+            if ($script:Lock) { throw '-Locked mode: Npcap is not installed automatically (install it from https://npcap.com)' }
+            $npPage = (Invoke-WebRequest -Uri 'https://npcap.com/' -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }).Content
+            $npName = [regex]::Matches($npPage, 'npcap-(\d+)\.(\d+)\.exe') |
+                Sort-Object { [int]$_.Groups[1].Value }, { [int]$_.Groups[2].Value } |
+                ForEach-Object { $_.Value } | Select-Object -Last 1
+            if (-not $npName) { throw 'No npcap-<version>.exe found on https://npcap.com/ (install Npcap manually)' }
+            $npUrl = "https://npcap.com/dist/$npName"
+            $npExe = Join-Path $DlDir $npName
+            Write-Info "Downloading: $npUrl"
+            Invoke-WebRequest -Uri $npUrl -OutFile $npExe -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }
+            $r.downloads[$npUrl] = (Get-FileHash $npExe -Algorithm SHA256).Hash
+            Write-Info "Npcap installer started ($npName, WinPcap API-compatible mode): complete its window"
+            $np = Start-Process $npExe -ArgumentList '/winpcap_mode=yes' -Wait -PassThru
+            if ($np.ExitCode -ne 0) { throw "Npcap installer ended with code $($np.ExitCode) (cancelled?)" }
+            $r.notes += "Npcap installed ($npName, WinPcap API-compatible mode)"
+            $b = & $buildInfo; $rc = $b.Code; $bi = $b.Out
+        }
+        if ($rc -ne 0) {
+            $r.status = 'WARN'
+            $hint = if ($InstallNpcap) { 'Npcap is installed but suricata.exe still does not start' } else { 'if a DLL is missing (wpcap.dll), run again with -InstallNpcap (installs Npcap, a network driver: your decision)' }
+            $r.notes += "suricata.exe --build-info fails (code $rc): $hint"
+        } else {
+            Set-Content -Path (Join-Path $suDir 'build-info.txt') -Value $bi -Encoding UTF8
+        }
+        # Rules: ET Open through suricata-update (not in -Locked mode: rules folder compared with the lock)
+        $rulesDir = Join-Path $suDir 'rules'
+        New-Item -ItemType Directory -Force -Path $rulesDir | Out-Null
+        if ($script:Lock) {
+            $r.notes += '-Locked mode: rules not updated (tools\suricata\rules compared with the lock)'
+        } else {
+            try {
+                $vpy = New-ToolVenv 'suricata-update' @('suricata-update')
+                # suricata-update is installed as a Python script without extension (Scripts\suricata-update),
+                # not as an .exe: it is run with the Python of its venv
+                $su = Join-Path (Split-Path $vpy) 'suricata-update'
+                if (-not (Test-Path $su)) { throw "suricata-update not found in its venv ($su)" }
+                if (-not $ver) { throw 'Suricata version unknown (name of the MSI)' }
+                # On Windows, suricata-update cannot download: it copies an open temporary file
+                # ("Failed to copy file: Permission denied"). The ET Open archive is downloaded here,
+                # into the cache of suricata-update (<data>\update\cache\<md5 of the URL>-<name>),
+                # and suricata-update runs --offline on it.
+                $etUrl = "https://rules.emergingthreats.net/open/suricata-$ver/emerging.rules.tar.gz"
+                $md5 = -join ([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($etUrl)) | ForEach-Object { $_.ToString('x2') })
+                $suData = Join-Path $suDir 'update'
+                $etCache = Join-Path $suData 'update\cache'
+                New-Item -ItemType Directory -Force -Path $etCache | Out-Null
+                $etFile = Join-Path $etCache "$md5-emerging.rules.tar.gz"
+                # ET Open publishes one folder per Suricata version; if this exact version has none,
+                # the folder of the same minor version (x.y.0) is used
+                $parts = $ver.Split('.')
+                $etTried = @()
+                foreach ($u in @($etUrl, "https://rules.emergingthreats.net/open/suricata-$($parts[0]).$($parts[1]).0/emerging.rules.tar.gz") | Select-Object -Unique) {
+                    try {
+                        Write-Info "Downloading: $u"
+                        Invoke-WebRequest -Uri $u -OutFile $etFile -UseBasicParsing -Headers @{ 'User-Agent' = $UserAgent }
+                        $r.downloads[$u] = (Get-FileHash $etFile -Algorithm SHA256).Hash
+                        $etTried = $null; break
+                    } catch { $etTried += "$u ($($_.Exception.Message))" }
+                }
+                if ($etTried) { throw "ET Open download failed: $($etTried -join '; ')" }
+                $suArgs = @('--suricata-version', $ver, '--suricata-conf', $yaml.FullName, '-D', $suData, '-o', $rulesDir, '--no-test', '--no-reload', '--offline')
+                if ((Invoke-Native $vpy (@($su) + $suArgs)) -ne 0) { throw 'suricata-update failed' }
+                $r.executables['suricata_update'] = $su
+            } catch {
+                $r.status = 'WARN'
+                $r.notes += "ET Open rules not installed ($($_.Exception.Message)): protocol metadata without alerts"
+            }
+        }
+        $rules = Join-Path $rulesDir 'suricata.rules'
+        if (Test-Path $rules) {
+            $r.executables['suricata_rules'] = $rules
+            $n = @(Select-String -Path $rules -Pattern '^(alert|drop|reject|pass) ' -ErrorAction SilentlyContinue).Count
+            # suricata-update still succeeds when the ET Open download fails (only the rules shipped with
+            # Suricata, a few hundred): ET Open holds tens of thousands
+            if ($n -lt 5000) {
+                $r.status = 'WARN'
+                $r.notes += "Only $n rules: the ET Open download probably failed (rules.emergingthreats.net); run install\02_Install-Tools.ps1 -Only Suricata -Force again"
+            } else {
+                $r.notes += "$n rules (ET Open, suricata-update); MSI extracted, not installed"
+            }
+        }
     }
 
     # ======================================================================

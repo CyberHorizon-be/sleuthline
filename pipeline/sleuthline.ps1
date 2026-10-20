@@ -21,6 +21,8 @@
 
     Memory: a memory image in <case>\memory\ is analyzed with Volatility 3 during parse;
     another location: sleuthline.ps1 parse <case> --memory D:\dumps\host.raw
+    Network: the captures in <case>\pcap\ are analyzed with Suricata during parse;
+    other files: sleuthline.ps1 parse <case> --pcap D:\captures\day1.pcap --pcap D:\captures\day2.pcap
 
 .EXAMPLE
     C:\Sleuthline\pipeline\sleuthline.ps1 check

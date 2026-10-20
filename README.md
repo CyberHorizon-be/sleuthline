@@ -1,8 +1,8 @@
 # Sleuthline
 
-**From a KAPE collection and a memory image to an evidence-backed incident response report.**
+**From a KAPE collection, a memory image and network captures to an evidence-backed incident response report.**
 
-Sleuthline is a Windows DFIR pipeline for an isolated analysis VM. It takes a KAPE triage collection (e.g. `!SANS_Triage`) and, if you have one, a memory image of the machine, parses them with recognized forensic tools (Volatility 3 for the memory), normalizes every output into a single DuckDB database with a UTC timeline, then lets an LLM agent investigate the case step by step and write a technical Word report in which **every finding cites verifiable records** of the database.
+Sleuthline is a Windows DFIR pipeline for an isolated analysis VM. It takes a KAPE triage collection (e.g. `!SANS_Triage`) and, if you have them, a memory image of the machine and network captures of the incident, parses them with recognized forensic tools (Volatility 3 for the memory, Suricata for the network), normalizes every output into a single DuckDB database with a UTC timeline, then lets an LLM agent investigate the case step by step and write a technical Word report in which **every finding cites verifiable records** of the database.
 
 ```
 KAPE collection ──> 1. inventory ──> 2. parsing ──────┐
@@ -11,15 +11,21 @@ KAPE collection ──> 1. inventory ──> 2. parsing ──────┐
                     (KAPE SHA-1)      Chainsaw,       │
                                       Zircolite,      ├──> 3. normalization ──> 4. analysis agent ──> Word report
                                       Dissect, plaso… │    DuckDB: raw tables,   playbook steps        findings, timeline,
-                                                      │    UTC timeline,         (memory step),        IOCs, MITRE, answers,
-Memory image ──────────────────────> 2. parsing ──────┘    detections,           SQL tools, evidence   recommendations,
-(optional)                            Volatility 3:        hash lists            checked against       traceability
-                                      SHA-256, 58 plugins                        the database
+                                                      │    UTC timeline,         (memory and           IOCs, MITRE, answers,
+Memory image ──────────────────────> 2. parsing ──────┤    detections,           network steps),       recommendations,
+(optional)                            Volatility 3:   │    hash lists            SQL tools, evidence   traceability
+                                      SHA-256,        │                          checked against
+                                      58 plugins      │                          the database
+                                                      │
+Network captures ──────────────────> 2. parsing ──────┘
+(optional, .pcap)                     Suricata:
+                                      SHA-256, ET Open
+                                      rules, EVE output
 ```
 
-- **Recognized tools only.** EZTools, Hayabusa, Chainsaw, Zircolite, SigmaHQ, Dissect, plaso, Hindsight, SIDR, LogFileParser, BitsParser, bmc-tools, odl.py, Volatility 3. A custom parser is written only when no tool exists (`pipeline\docs\POLICY_parsers.md`).
-- **Evidence first.** Read-only collection and memory image, integrity check against the KAPE SHA-1, SHA-256 of the memory image, working copies for tools that write into databases, every timeline row and finding traceable to `<output>#<record>` and to the original path on the machine.
-- **Disk and memory together.** The memory image shows what was running at the moment of the capture (processes, injected code, network connections, services); a dedicated playbook step confronts it with the disk artifacts, and the evidence policy counts them as independent sources.
+- **Recognized tools only.** EZTools, Hayabusa, Chainsaw, Zircolite, SigmaHQ, Dissect, plaso, Hindsight, SIDR, LogFileParser, BitsParser, bmc-tools, odl.py, Volatility 3, Suricata (ET Open rules). A custom parser is written only when no tool exists (`pipeline\docs\POLICY_parsers.md`).
+- **Evidence first.** Read-only collection, memory image and captures, integrity check against the KAPE SHA-1, SHA-256 of the memory image and of the captures, working copies for tools that write into databases, every timeline row and finding traceable to `<output>#<record>` and to the original path on the machine.
+- **Disk, memory and network together.** The memory image shows what was running at the moment of the capture (processes, injected code, network connections, services); the network captures show what crossed the wire (alerts, connections, DNS, HTTP, TLS, transferred files). Dedicated playbook steps confront them with the disk artifacts, and the evidence policy counts disk, memory and network as independent sources.
 - **Any model.** Claude (default), any OpenAI-compatible API, or a local model (Ollama, LM Studio, vLLM) so that no data leaves the VM.
 - **Reproducible.** Tool versions locked in `install\tools-lock.json`, pipeline version (git commit) recorded in the database and the report, tests and regression references.
 
@@ -27,12 +33,14 @@ Memory image ──────────────────────>
 
 **Memory tested on** [DFIR Madness Case 001 "The Stolen Szechuan Sauce"](https://dfirmadness.com/the-stolen-szechuan-sauce/), with the memory image of the workstation only (`DESKTOP-SDN1RPT`, Windows 10, 2 GB), in a blind run without guidance: parsing 11 min (all 58 Volatility plugins OK), normalization 1 min, analysis 80 min, **about 10 USD** of Claude Opus 5.5 API usage. From memory alone, the agent found the RDP logon of the domain Administrator, the malware `coreupdater.exe` and its auto-start service, its download with Edge, the code injected into `spoolsv.exe` with access to `lsass.exe`, and the two sessions to the C2 `203.78.103.109:443` (see [Memory](#memory-volatility-3)). **The generated report:** [PDF](docs/examples/report_dfirmadness_case001_memory.pdf) · [Word](docs/examples/report_dfirmadness_case001_memory.docx).
 
+**Network tested on** the same case, with the network capture only (`case001.pcap`, 198 MB, 411,797 packets), in a blind run without guidance: parsing 12 s (Suricata 8.0.7, 52,825 ET Open rules, 461 alerts), normalization under 1 min, analysis 62 min, **about 6 USD** of Claude Opus 5.5 API usage. From the network alone, the agent found the RDP brute force of the domain Administrator from `194.61.24.102` (95 failed attempts in 21 s, then success), the download of `coreupdater.exe` by the domain controller and the workstation (with its hashes), the Meterpreter C2 to `203.78.103.109:443` on both hosts, the RDP pivot from the DC to the workstation, and the C2 restarting at each logon (persistence) (see [Network captures](#network-captures-suricata)). **The generated report:** [PDF](docs/examples/report_dfirmadness_case001_network.pdf) · [Word](docs/examples/report_dfirmadness_case001_network.docx).
+
 > Sleuthline assists an analyst; it is not an automated expert. The report must be reviewed and validated by a qualified analyst before any distribution or decision (see [Limitations and responsibility](#limitations-and-responsibility)).
 
 ## Requirements
 
 - Windows 10/11 or Server 2019+ **64-bit**, dedicated and isolated VM
-- Internet access (github.com, api.github.com, pypi.org, download.ericzimmermanstools.com, python.org; msdl.microsoft.com for the Windows symbols used by Volatility 3, at the first analysis of each Windows build)
+- Internet access (github.com, api.github.com, pypi.org, download.ericzimmermanstools.com, python.org; msdl.microsoft.com for the Windows symbols used by Volatility 3, at the first analysis of each Windows build; www.openinfosecfoundation.org and rules.emergingthreats.net for Suricata and its ET Open rules)
 - 100 GB of free space recommended
 - PowerShell started **as administrator**
 - KAPE (optional, only to collect): download it yourself from Kroll and drop `kape.zip` in `install\`
@@ -44,10 +52,10 @@ Memory image ──────────────────────>
 | Step | Command | What it does | What it produces |
 |---|---|---|---|
 | 1 | `inventory` | Lists every file of the KAPE collection, finds the tool that parses it, checks its integrity against the KAPE SHA-1 | `inventory\coverage.md` |
-| 2 | `parse` | Runs the forensic tools on the collection, and Volatility 3 on the memory image if there is one, read-only | `parsed\` (one folder per tool), `parsed\run_summary.md` |
+| 2 | `parse` | Runs the forensic tools on the collection, Volatility 3 on the memory image and Suricata on the network captures if there are any, read-only | `parsed\` (one folder per tool), `parsed\run_summary.md` |
 | 3 | `normalize` | Loads every output into one DuckDB database with a UTC timeline and the detections | `db\case.duckdb`, `db\normalize_report.md` |
 | | *pause* | You tell the agent what you know: context, questions, IOCs | `analysis\guidance.txt` |
-| 4 | `analyze` | The agent investigates following the playbook (with a memory step if there is an image), answers your questions, every finding backed by database records | `analysis\report_<case>_<date>.docx` |
+| 4 | `analyze` | The agent investigates following the playbook (with memory and network steps if there is an image or captures), answers your questions, every finding backed by database records | `analysis\report_<case>_<date>.docx` |
 
 **How to run it.** Every command, from the clone to the report, as run on [Threat Hunting Lab 1](https://github.com/medmondson44/Threat_Hunting_Labs/blob/main/Lab_1). In a PowerShell window **opened as administrator**:
 
@@ -63,7 +71,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 42 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 48 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -97,13 +105,26 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test02   # 8
 
 Details and results: **[Memory (Volatility 3)](#memory-volatility-3)**.
 
+**With network captures.** Put them in `<case>\pcap\` before `parse`: the `suricata` job runs with the other tools. As run on the same case, with the capture only (installation that already existed, updated with `.\install\02_Install-Tools.ps1 -Only Suricata,Pipeline -Force -InstallNpcap`, which also installed Npcap):
+
+```powershell
+#   extract case001.pcap to C:\Sleuthline\cases\test03\pcap\
+New-Item -ItemType Directory -Force C:\Sleuthline\cases\test03\C            # empty: no KAPE collection in this case
+C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test03
+C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test03   # 12 seconds: Suricata
+C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test03   # under 1 minute
+C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test03   # 62 minutes, about 6 USD, no guidance
+```
+
+Details and results: **[Network captures (Suricata)](#network-captures-suricata)**.
+
 ## Repository layout
 
 ```
 <repository>\                       ← source of truth (e.g. C:\Sleuthline-setup)
 ├── Install-All.ps1                  ← ENTRY POINT: installs everything
 ├── LICENSE, README.md, CHANGELOG.md
-├── docs\examples\                 ← reports generated on Threat Hunting Lab 1 and on DFIR Madness Case 001 (memory) (PDF and Word)
+├── docs\examples\                 ← reports generated on Threat Hunting Lab 1 and on DFIR Madness Case 001 (memory, network) (PDF and Word)
 ├── install\                         ← VM installation
 │   ├── 01_Prepare-VM.ps1                Python, .NET, 7-Zip, Git, folder tree, venv
 │   ├── 02_Install-Tools.ps1             parsing tools + deployment of the pipeline
@@ -117,6 +138,7 @@ Details and results: **[Memory (Volatility 3)](#memory-volatility-3)**.
     ├── 1_inventory\     inventory.py         collection inventory, coverage, integrity, gaps
     ├── 2_parsing\       orchestrator.py      runs the tools on the collection
     │                    memory.py            Volatility 3 job (memory image)
+    │                    network.py           Suricata job (network captures)
     │                    sample_outputs.py    samples of the outputs (development aid)
     ├── 3_normalize\     normalize.py         loading into DuckDB: timeline, detections, hash lists
     ├── 4_analysis\      analyze.py           analysis agent (LLM)
@@ -179,6 +201,7 @@ What is installed:
 │   ├── plaso\              plaso (venv): setupapi, PCA
 │   ├── OneDriveODL\        odl.py (venv): OneDrive logs
 │   ├── volatility\         Volatility 3 (venv volatility3): symbols\ and cache\ of the memory analysis
+│   ├── suricata\           Suricata (MSI extracted, not installed) + rules\ (ET Open, suricata-update)
 │   ├── _help\              online help of each installed tool (syntax reference)
 │   └── tools-manifest.json ← version, URL and SHA-256 of each tool
 ├── pipeline\               deployed copy of <repository>\pipeline (do not edit here) + VERSION.json
@@ -222,7 +245,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (42 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (48 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```
@@ -237,7 +260,8 @@ C:\Sleuthline\cases\test01\
 ├── 2023-11-10T123304_SkipLog.csv
 ├── C\
 ├── LongFileNames\
-└── memory\              optional: the memory image of the same machine (one image)
+├── memory\              optional: the memory image of the same machine (one image)
+└── pcap\                optional: network captures of the incident (.pcap, .pcapng)
 ```
 
 **Dates of the copy.** Copying the collection to the VM can give some files the date of the copy: on Lab 1, LNK files appeared in the timeline with the date of the analysis day. Say so in the guidance file (step 5) so that the agent treats those dates as copy artifacts, not evidence.
@@ -333,7 +357,7 @@ dates of 2026-10-19 are copy artefacts, not evidence.
 C:\Sleuthline\pipeline\sleuthline.ps1 analyze C:\Sleuthline\cases\test01
 ```
 
-The only paid step. The agent works through the steps of `PLAYBOOK.md` (context, detections, execution, memory if an image was provided, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
+The only paid step. The agent works through the steps of `PLAYBOOK.md` (context, detections, execution, memory and network if provided, persistence, accounts, remote access, files, browsing, anti-forensics, exfiltration, timeline, summary), queries the database, records evidence-backed findings, answers the questions, then writes the Word report. Progress is shown step by step in the console.
 
 On Lab 1: **22 minutes** for the 12 steps, 153 model calls, 9.0 million input tokens of which 93 % read back from the prompt cache, 124 000 output tokens: **7.23 USD billed** (Claude Console, `check` included), in line with the Claude Opus 5.5 list prices (cache read 0.20, cache write 5, output 20 USD per million tokens).
 
@@ -361,7 +385,7 @@ C:\Sleuthline\pipeline\sleuthline.ps1 all C:\Sleuthline\cases\<case>   # 1 -> 2 
 | Command | Step |
 |---|---|
 | `sleuthline.ps1 inventory <case>` | 1. inventory, coverage and integrity |
-| `sleuthline.ps1 parse <case> [--only job --force] [--memory <image>]` | 2. parsing (and the memory image, if any) |
+| `sleuthline.ps1 parse <case> [--only job --force] [--memory <image>] [--pcap <capture>]` | 2. parsing (and the memory image and network captures, if any) |
 | `sleuthline.ps1 normalize <case>` | 3. DuckDB database |
 | `sleuthline.ps1 analyze <case> [--profile ...]` | 4. agent + Word report |
 | `sleuthline.ps1 ask <case> "text"` | one-off question to the agent |
@@ -419,6 +443,22 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test02   # 8
 - **Parsing:** the SHA-256 of the image, then `windows.info` (38 s, symbols downloaded) and the 58 plugins, all `ok`. The slowest: `svcdiff`, `mftscan`, `svcscan` (2 to 3 minutes each). 15 plugins found nothing (e.g. no hollowing or ghosting in this case; `userassist` and `amcache` because these registry keys were incomplete in memory).
 - **Analysis:** 13 steps, 242 model calls, 26 findings and 17 IOCs. The responder's tools (FTK Imager, msinfo32, autorunsc) and the Microsoft traffic were ruled out as noise. Every high and critical finding is `probable`, not `confirmed`: with a memory image alone, all the evidence comes from one source. What needs the disk (the source address of the RDP logon, proof of exfiltration, event logs) is reported as not determinable.
 
+### Network captures (Suricata)
+
+Network captures of the same incident can be analyzed with the collection. Put them in `<case>\pcap\` (`.pcap`, `.pcapng`, `.cap`, sub-folders included, several files allowed), or give them: `sleuthline.ps1 parse <case> --pcap D:\captures\day1.pcap --pcap D:\captures\day2.pcap`. The `parse` step then runs the `suricata` job.
+
+- **The captures are evidence.** They get the read-only attribute, and their SHA-256 is computed first (`parsed\suricata\pcap_files.jsonl`, table `raw.pcap_files`).
+- **Suricata reads them offline** (`suricata -r`), one run per capture, with the `suricata.yaml` shipped with Suricata adjusted for an offline analysis (`parsed\suricata\_suricata.yaml`): EVE output only, file hashes (MD5, SHA-1, SHA-256), community-id, checksum validation off, ET Open rules installed by `suricata-update`. Without rules, the protocol metadata is still produced.
+- **In the database:** the EVE output (`<capture>\raw\eve.jsonl`, kept and hashed) is split by event type, nested fields flattened: `raw.suricata_flow`, `raw.suricata_dns`, `raw.suricata_http`, `raw.suricata_tls`, `raw.suricata_fileinfo`, `raw.suricata_anomaly`, `raw.suricata_eve_smb`, `raw.suricata_eve_rdp`... Alerts go into `detections` (engine `Suricata`, severity 1 / 2 / 3 = high / medium / low); flows, DNS, HTTP, TLS and files go into the timeline. File hashes are compared with the hash lists.
+- **Installation:** the Suricata Windows MSI is **extracted** (`msiexec /a`), not installed: no service, no driver, nothing in Program Files. The Windows build of Suricata needs `wpcap.dll`, provided by Npcap, a network driver: installing it is your decision. With `-InstallNpcap` (`02_Install-Tools.ps1` or `Install-All.ps1`), if `suricata.exe` does not start, the installer downloads the latest Npcap from npcap.com and opens its installer window in WinPcap API-compatible mode (the free edition has no silent install).
+- **Analysis:** step 5 of the playbook examines the traffic and confronts it with the disk and the memory. For the evidence policy, everything from the captures counts as **one** source, distinct from the disk and the memory.
+
+**As tested on Case 001 (network capture only, no KAPE collection).** On the existing installation, `.\install\02_Install-Tools.ps1 -Only Suricata,Pipeline -Force -InstallNpcap` extracted Suricata 8.0.7, installed Npcap 1.89 (its installer window had to be completed), and installed the ET Open rules for Suricata 8.0.7 (68,731 rules, 52,834 enabled). As for the memory, an empty folder `C` in the case replaces the KAPE collection (see the commands in [How to run it](#how-it-works-and-how-to-run-it)).
+
+- **Parsing:** 12 seconds for `case001.pcap` (198 MB, 411,797 packets). 52,825 rules loaded: 9 recent ET Open rules are rejected by the Windows build of Suricata (keyword `file.magic`), and a warning says that `threshold.config` is missing (not in the MSI; it only limits repeated alerts).
+- **Normalization:** 13 `suricata_*` tables, 99,868 timeline rows, 461 detections (7 high, 4 medium, 450 low). Times are converted to UTC (Suricata writes them in the time zone of the analysis VM).
+- **Analysis:** 14 steps, 159 model calls, 22 findings and 12 IOCs (IPs, URL, MD5 / SHA-1 / SHA-256 of `coreupdater.exe`, JA3 / JA4 of the brute-force client). Execution and persistence on the hosts are `probable`, not `confirmed`: they are inferred from the traffic, without host artifacts.
+
 ### 3. Normalization into DuckDB
 
 ```powershell
@@ -460,7 +500,7 @@ The database is fully rebuilt at each run (written to a temporary file, then rep
 C:\Sleuthline\pipeline\sleuthline.ps1 analyze "C:\Sleuthline\cases\<case>"   # full analysis + Word report
 ```
 
-**Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. memory (RAM), only if a memory image was analyzed; 5. persistence; 6. accounts and authentication; 7. remote access and lateral movement; 8. file activity; 9. web browsing; 10. anti-forensics; 11. exfiltration; 12. incident timeline; 13. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely.
+**Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. memory (RAM), only if a memory image was analyzed; 5. network traffic, only if captures were analyzed; 6. persistence; 7. accounts and authentication; 8. remote access and lateral movement; 9. file activity; 10. web browsing; 11. anti-forensics; 12. exfiltration; 13. incident timeline; 14. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely.
 
 **Agent tools.** SQL query, search, time window, evidence detail; it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
 

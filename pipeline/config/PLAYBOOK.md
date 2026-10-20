@@ -19,7 +19,8 @@ Inspired by the SANS FOR500/FOR508 methodologies (triage, execution, persistence
    - Wi-Fi profile (`raw.native_wifi`) = configured network; the XML creation approximates the first connection, connection dates are in `raw.reg_knownnetworks` / `raw.dissect_network_history`;
    - `$FN` dates are more reliable than `$SI` in case of timestomping (SI<FN);
    - rows with `mapping = 'auto'` are not validated: check the raw table before citing them;
-   - memory (`raw.vol_*`, Volatility 3, only if a memory image was provided) = state of the machine at the moment of the capture: running processes and their command lines, live and recently closed connections, injected code. A process seen in `vol_psscan` but not in `vol_pslist` is unlinked (hidden or exited); `vol_malfind` has false positives (.NET, JIT, some security products): an RWX region starting with `MZ` or shellcode is significant, an empty one is not. Everything from the memory image counts as **one** source for corroboration.
+   - memory (`raw.vol_*`, Volatility 3, only if a memory image was provided) = state of the machine at the moment of the capture: running processes and their command lines, live and recently closed connections, injected code. A process seen in `vol_psscan` but not in `vol_pslist` is unlinked (hidden or exited); `vol_malfind` has false positives (.NET, JIT, some security products): an RWX region starting with `MZ` or shellcode is significant, an empty one is not. Everything from the memory image counts as **one** source for corroboration;
+   - network capture (`raw.suricata_*`, `detections` with engine `Suricata`, only if captures were provided) = what crossed the wire during the capture window, not what the machine did: an ET Open alert is a lead to qualify, not a finding. Everything from the captures counts as **one** source, distinct from the disk and the memory.
 5. **Corroborate.** An important finding relies on at least two independent sources (e.g. Prefetch + 4688 + Sysmon 1). The program enforces it: a critical or high finding is kept as `confirmed` only with two independent sources (a Hayabusa/Chainsaw detection and the event it fires on are ONE source: the same .evtx), otherwise it is recorded as `probable`. Add corroborating references with `add_evidence` when you find them. Evidence with `mapping = 'auto'` never confirms on its own.
    Separate in each finding the **facts** (`description`: what the records show, with UTC times and identifiers) from the **interpretation** (`analysis`: what it means, alternatives, certainty). An answer to a question cites its evidence, unless it is `undetermined`.
 6. **Pivot.** Every new item (file, hash, user, IP, time) is searched in the other sources: time window around it (± 5 to 30 min), same path in `$MFT`/`$J`, same name in the EVTX.
@@ -82,7 +83,18 @@ Goal: if a memory image was analyzed (tables `raw.vol_*`; `raw.vol_image` gives 
 - Accounts: `raw.vol_sessions`, `raw.vol_getsids`, `raw.vol_privileges` (SeDebugPrivilege enabled in a user process), `raw.vol_skeleton_key`.
 - **Confront memory and disk** for every suspicious process: its executable on disk (`raw.mft`, Prefetch, Amcache SHA1), its creation in the event logs (4688, Sysmon 1 with the same PID and time), its network activity. A process in memory with no trace on disk (deleted file, fileless code) and a disk artifact contradicted by memory are findings in themselves. Cite the memory record **and** the disk records: they are independent sources.
 
-## Step 5: Persistence
+## Step 5: Network traffic (PCAP)
+
+Goal: if network captures were analyzed (tables `raw.suricata_*`; `raw.pcap_files` gives their names and SHA-256), establish who the machine talked to, what was transferred, and confront it with the disk and the memory. If there is no `raw.suricata_*` table, record in step_complete that no capture was provided, and move on.
+
+- Capture window: first and last `timestamp` of `raw.suricata_flow`. Findings outside this window cannot be seen on the network: say so.
+- Alerts: `detections` where `engine = 'Suricata'` (signature, severity, `details` with the endpoints and the community-id); the HTTP / DNS / TLS context of each alert is in `raw.suricata_alert` (`http_url`, `dns_rrname`, `tls_sni`, `payload_printable`). Qualify each alert: many ET Open rules flag policy or noise (`ET INFO`, `ET POLICY`).
+- Conversations: `raw.suricata_flow` (endpoints, application protocol, bytes in each direction, duration). Look for: external addresses, unusual ports, long-lived or periodic connections (beaconing), large uploads (exfiltration), internal hosts reached on 445 / 3389 / 5985 (lateral movement).
+- Names and URLs: `raw.suricata_dns` (queries and answers: rare or algorithmic domains, newly seen domains), `raw.suricata_http` (host, URL, method, user agent, content type), `raw.suricata_tls` (SNI, certificate subject / issuer, JA3 / JA4: self-signed certificates, SNI absent or not matching).
+- Files: `raw.suricata_fileinfo` (file name, magic, size, MD5 / SHA-1 / SHA-256 of the files transferred in clear text); their hashes are compared with the hash lists (`hash_hits`) and must be searched on the disk (Amcache SHA1, Sysmon hashes, Zone.Identifier) and in memory.
+- **Confront network, disk and memory**: for each suspicious connection, the process that owned it (memory `raw.vol_netscan`: same endpoints and time; disk: Sysmon 3, SRUM network usage, browser history, Defender), and for each downloaded file, its creation and execution on the disk. Cite the network record **and** the disk / memory records: they are independent sources.
+
+## Step 6: Persistence
 
 Goal: identify any mechanism allowing to survive a reboot or to start again.
 
@@ -96,7 +108,7 @@ Goal: identify any mechanism allowing to survive a reboot or to start again.
 - Startup: Startup folders (`raw.native_startup`: SHA-256 and original timestamps, then `raw.mft` / `raw.lnk`), modified hosts file (`raw.native_hosts`), Office (`raw.dissect_msoffice_startup`), PendingFileRenameOperations.
 - Compare the creation dates with the incident window; rule out legitimate Microsoft / vendor entries with a justification.
 
-## Step 6: Accounts, authentication and privileges
+## Step 7: Accounts, authentication and privileges
 
 Goal: trace logons, accounts used or created and privilege escalations.
 
@@ -105,18 +117,19 @@ Goal: trace logons, accounts used or created and privilege escalations.
 - SAM accounts (`raw.reg_useraccounts`): creation, last logon, password changes, group membership.
 - Look for: new accounts, accounts added to the administrators, unusual type 3/10 logons, bursts of failures, use of explicit credentials (4648).
 
-## Step 7: Remote access and lateral movement
+## Step 8: Remote access and lateral movement
 
 Goal: determine whether the machine was controlled remotely or used as a pivot.
 
-- Inbound/outbound RDP: events of step 6, `raw.dissect_mru_mstsc`, `raw.registry_kroll` (Terminal Server Client), bitmap cache (if present), .rdp files `raw.native_rdp` (Default.rdp = last mstsc connection: host, account, gateway; a .rdp received by e-mail or downloaded is a known phishing vector).
+- Inbound/outbound RDP: events of step 7, `raw.dissect_mru_mstsc`, `raw.registry_kroll` (Terminal Server Client), bitmap cache (if present), .rdp files `raw.native_rdp` (Default.rdp = last mstsc connection: host, account, gateway; a .rdp received by e-mail or downloaded is a known phishing vector).
 - PsExec and equivalents: `PSEXESVC` services, `\ADMIN$`, 5140/5145, 7045 with random names.
 - WinRM / remote PowerShell: WinRM/Operational 6, 91, 168; Windows PowerShell 400 with HostName `ServerRemoteHost`.
 - Remote access tools (AnyDesk, TeamViewer, ScreenConnect, RustDesk, Splashtop...): execution, services, logs (`raw.dissect_remoteaccess_*`: AnyDesk, TeamViewer, Splashtop, RustDesk). ScreenConnect, Atera and other RMM tools: no parser, look for their folders in `raw.mft`, their services and the Application log ("ScreenConnect" source).
 - Network shares and mapped drives: `raw.dissect_mru_networkdrive`, ShellBags of UNC paths.
 - Memory (if available): connections of `raw.vol_netscan` on 3389, 445, 5985/5986 and to other internal hosts, and the process owning them.
+- Network (if available): flows of `raw.suricata_flow` to or from internal hosts on 445, 3389, 5985/5986, 135, and SMB / DCERPC / Kerberos / RDP events (`raw.suricata_eve_smb`, `raw.suricata_eve_dcerpc`, `raw.suricata_eve_krb5`, `raw.suricata_eve_rdp`).
 
-## Step 8: User activity on files and folders
+## Step 9: User activity on files and folders
 
 Goal: rebuild the files and folders opened, created, renamed or deleted around the identified pivots.
 
@@ -129,7 +142,7 @@ Goal: rebuild the files and folders opened, created, renamed or deleted around t
 - Recycle Bin: `raw.recyclebin`, `raw.dissect_recyclebin`.
 - Removable devices: `raw.reg_usb`, `raw.reg_usbstor`, `raw.reg_portabledevices`, EMDMgmt (`raw.registry_complement`), setupapi (`timeline` artifact `setupapi.dev.log`), volumes in LNK/Jump Lists (volume serial number to match with EMDMgmt, converted to hexadecimal).
 
-## Step 9: Web browsing, downloads and e-mail
+## Step 10: Web browsing, downloads and e-mail
 
 Goal: identify the origin of the suspicious files and the relevant web activity.
 
@@ -139,7 +152,7 @@ Goal: identify the origin of the suspicious files and the relevant web activity.
 - Correlate each download with the creation of the file (`raw.mft`, Zone.Identifier `HostUrl`/`ReferrerUrl`) and its execution (step 3).
 - Typed searches revealing the intent (tools, techniques, evasion).
 
-## Step 10: Defense evasion and anti-forensics
+## Step 11: Defense evasion and anti-forensics
 
 Goal: detect attempts to hide the activity or to weaken security.
 
@@ -150,7 +163,7 @@ Goal: detect attempts to hide the activity or to weaken security.
 - System time changes: 4616, Kernel-General 1.
 - Memory (if available): injection, hollowing, hooks and hidden processes found at step 4 (`raw.vol_malfind`, `raw.vol_psxview`, `raw.vol_ldrmodules`, `raw.vol_etwpatch`...).
 
-## Step 11: Collection, exfiltration and communications
+## Step 12: Collection, exfiltration and communications
 
 Goal: assess whether data was gathered, compressed or sent outside.
 
@@ -158,9 +171,10 @@ Goal: assess whether data was gathered, compressed or sent outside.
 - Network volumes per application: `raw.srum_network_usage` (high BytesSent), `raw.srum_network_conn`.
 - Cloud synchronization and transfers: OneDrive (`raw.odl`), rclone, browsers (uploads), BITS (Bits-Client events 3, 59, 60). The OneDrive SyncEngineDatabase.db database is not parsed (no tool installed, see `parser_registry.json`): report it in the limitations if OneDrive is involved.
 - Network connections visible in the EVTX (5156 if enabled, Sysmon 3, 22 DNS), firewall (`raw.dissect_firewall_*`, added rules: 2004/2005).
+- Network captures (if available, step 5): outbound flows with high `flow_bytes_toserver` in `raw.suricata_flow`, uploads in `raw.suricata_http` (POST / PUT), files in `raw.suricata_fileinfo`, DNS tunneling (long or numerous queries in `raw.suricata_dns`).
 - Network indicators to extract as IOCs: IPs, domains, URLs.
 
-## Step 12: Incident timeline and correlation
+## Step 13: Incident timeline and correlation
 
 Goal: assemble the findings into a coherent incident timeline.
 
@@ -169,7 +183,7 @@ Goal: assemble the findings into a coherent incident timeline.
 - Check the consistency of times between sources; report inconsistencies (clock, time zone, timestomping).
 - List the final IOCs with `add_ioc` (hash, path, file name, IP, domain, URL, account, registry key, service, task), each with its evidence.
 
-## Step 13: Summary, answers and recommendations
+## Step 14: Summary, answers and recommendations
 
 Goal: produce the summary elements of the report.
 

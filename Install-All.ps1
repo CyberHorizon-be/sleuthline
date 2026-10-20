@@ -28,6 +28,7 @@ param(
     [switch]$EnableLongPaths,
     [switch]$ForceTools,
     [string]$KapeZip,
+    [switch]$InstallNpcap,    # Suricata: installs Npcap (network driver) if wpcap.dll is missing
     [string]$GitHubToken = $env:GITHUB_TOKEN,
     [switch]$Locked,          # exact versions of install\tools-lock.json (reproducible installation)
     [string]$LockFile
@@ -46,6 +47,7 @@ $tools = @{ Root = $Root }
 if ($Locked)      { $tools.Locked = $true; if ($LockFile) { $tools.LockFile = $LockFile } }
 if ($ForceTools)  { $tools.Force = $true }
 if ($KapeZip)     { $tools.KapeZip = $KapeZip }
+if ($InstallNpcap) { $tools.InstallNpcap = $true }
 if ($GitHubToken) { $tools.GitHubToken = $GitHubToken }
 & (Join-Path $here 'install\02_Install-Tools.ps1') @tools
 exit $LASTEXITCODE
