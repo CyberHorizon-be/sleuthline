@@ -913,10 +913,13 @@ try {
         } else {
             try {
                 $vpy = New-ToolVenv 'suricata-update' @('suricata-update')
-                $su = Join-Path (Split-Path $vpy) 'suricata-update.exe'
+                # suricata-update is installed as a Python script without extension (Scripts\suricata-update),
+                # not as an .exe: it is run with the Python of its venv
+                $su = Join-Path (Split-Path $vpy) 'suricata-update'
+                if (-not (Test-Path $su)) { throw "suricata-update not found in its venv ($su)" }
                 $suArgs = @('--suricata-conf', $yaml.FullName, '-D', (Join-Path $suDir 'update'), '-o', $rulesDir, '--no-test', '--no-reload')
                 if ($ver) { $suArgs = @('--suricata-version', $ver) + $suArgs }
-                if ((Invoke-Native $su $suArgs) -ne 0) { throw 'suricata-update failed' }
+                if ((Invoke-Native $vpy (@($su) + $suArgs)) -ne 0) { throw 'suricata-update failed' }
                 $r.executables['suricata_update'] = $su
             } catch {
                 $r.status = 'WARN'
