@@ -64,7 +64,7 @@ Network captures ──────────────────> 2. pars
 Set-ExecutionPolicy -Scope Process Bypass -Force          # allows the scripts in this window only
 git clone https://github.com/CyberHorizon-be/sleuthline.git C:\Sleuthline-setup
 cd C:\Sleuthline-setup
-.\Install-All.ps1 -AddDefenderExclusion -EnableLongPaths  # about 6 minutes
+.\Install-All.ps1 -AddDefenderExclusion -EnableLongPaths  # about 6 minutes (measured before Volatility 3 and Suricata were added)
 
 # --- API key (once) -------------------------------------------------------------------------
 notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_KEY = sk-ant-...  (Ctrl+S)
@@ -91,6 +91,8 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test01   # a
 ```
 
 Each step, what to look at between them and how to fill in the guidance file: **[Analyzing a case, step by step](#analyzing-a-case-step-by-step)**.
+
+**First installation.** `Install-All.ps1` installs every tool, Volatility 3 and Suricata included: nothing else to install for a memory image or network captures. Two exceptions: KAPE (put `kape.zip` in `install\` before, or install it later with `.\install\02_Install-Tools.ps1 -Only KAPE`), and Npcap, needed by `suricata.exe`, which is installed only on request: add `-InstallNpcap` to `Install-All.ps1`, or run `.\install\02_Install-Tools.ps1 -Only Suricata -Force -InstallNpcap` later (as done on the test VM). The `-Only ...` commands below are those used to update the test VM, which already existed.
 
 **With a memory image.** Put it in `<case>\memory\` before `parse`: the `volatility` job runs with the other tools, nothing else changes. As run on [DFIR Madness Case 001](https://dfirmadness.com/the-stolen-szechuan-sauce/), with the memory image only (installation that already existed, updated with `.\install\02_Install-Tools.ps1 -Only Volatility,Pipeline`):
 
@@ -177,6 +179,8 @@ The installation root is `C:\Sleuthline` by default (`-Root` to change it). The 
 | `-Only Dissect,Plaso,OneDriveODL` / `-Only Pipeline` | (Re)installs only some tools (`install\02_Install-Tools.ps1`). |
 | `-Locked` | Identical reinstallation of the reference VM from `install\tools-lock.json`. |
 | `-KapeZip <path>` | Installs KAPE from this zip (default: `install\kape.zip` if present). |
+| `-InstallNpcap` | Suricata: if `suricata.exe` does not start (missing `wpcap.dll`), downloads Npcap from npcap.com and opens its installer window (network driver: your decision). |
+| `-SuricataMsi <file>` | Suricata from this MSI instead of the latest one from openinfosecfoundation.org (`02_Install-Tools.ps1` only). |
 | `GITHUB_TOKEN` (env. variable) | Avoids the 60 requests/hour limit of the GitHub API. |
 
 What is installed:
