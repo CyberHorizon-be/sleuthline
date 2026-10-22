@@ -65,6 +65,10 @@ Set-ExecutionPolicy -Scope Process Bypass -Force          # allows the scripts i
 git clone https://github.com/CyberHorizon-be/sleuthline.git C:\Sleuthline-setup
 cd C:\Sleuthline-setup
 .\Install-All.ps1 -AddDefenderExclusion -EnableLongPaths  # about 6 minutes (measured before Volatility 3 and Suricata were added)
+#   optional, network captures: Npcap, needed by suricata.exe (opens the Npcap installer window: complete it)
+.\install\02_Install-Tools.ps1 -Only Suricata -Force -InstallNpcap
+#   optional, to collect with KAPE: kape.zip downloaded from Kroll
+.\install\02_Install-Tools.ps1 -Only KAPE -KapeZip C:\Users\<you>\Downloads\kape.zip
 
 # --- API key (once) -------------------------------------------------------------------------
 notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_KEY = sk-ant-...  (Ctrl+S)
