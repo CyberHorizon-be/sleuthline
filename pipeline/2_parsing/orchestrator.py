@@ -1123,7 +1123,9 @@ def run_job(job: Job, ctx: Context, force: bool, dry_run: bool) -> dict:
     if status_file.exists() and not force:
         prev = json.loads(status_file.read_text(encoding="utf-8"))
         if prev.get("status") in ("ok", "partial", "warning"):
-            return {**prev, "status": prev["status"], "skipped": "already run (--force to run again)"}
+            # artifacts: from the job definition (a _status.json written before 1.1 does not have them)
+            return {**prev, "artifacts": list(job.artifacts), "status": prev["status"],
+                    "skipped": "already run (--force to run again)"}
 
     if out.exists() and not dry_run:
         rm_tree(out)

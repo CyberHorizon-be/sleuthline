@@ -1243,6 +1243,12 @@ class TestCoverageConservationTimestamps(unittest.TestCase):
             job = next(j for j in orchestrator.JOBS if j.id == "volatility")
             rec = orchestrator.run_job(job, ctx, force=True, dry_run=False)
             self.assertIn("memory_image", rec["artifacts"])
+            # a job already run (and its _status.json written before 1.1, without artifacts) keeps its artifacts
+            (ctx.out / "volatility" / "_status.json").write_text(
+                json.dumps({k: v for k, v in rec.items() if k != "artifacts"}), encoding="utf-8")
+            again = orchestrator.run_job(job, ctx, force=False, dry_run=False)
+            self.assertIn("skipped", again)
+            self.assertIn("memory_image", again["artifacts"])
             self.assertLessEqual(rec["duration_s"], rec["cpu_s"] + 1)
             orchestrator.write_summary(ctx, [rec])
             orchestrator.update_sources(case, [image], [], {"summary": {"collection_root": None, "files_total": 0}})
