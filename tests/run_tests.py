@@ -405,6 +405,40 @@ def build_synthetic_case(case: Path):
     con.close()
 
 
+class TestHttpRetry(unittest.TestCase):
+    """Transient network failures of the model API are retried (not only HTTP 5xx / 429)."""
+
+    def test_ssl_error_then_success(self):
+        import ssl
+        import urllib.request
+        calls = []
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"ok": true}'
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ssl.SSLError("[SSL: SSLV3_ALERT_BAD_RECORD_MAC] sslv3 alert bad record mac")
+            if len(calls) == 2:
+                raise ConnectionResetError("reset by peer")
+            return Resp()
+        old_open, old_sleep = urllib.request.urlopen, llm.time.sleep
+        urllib.request.urlopen, llm.time.sleep = fake_urlopen, lambda s: None
+        try:
+            self.assertEqual(llm._http_json("https://x/v1/messages", {}, {}, 10), {"ok": True})
+            self.assertEqual(len(calls), 3)
+            calls.clear()
+            urllib.request.urlopen = lambda req, timeout=None: (_ for _ in ()).throw(ssl.SSLError("bad record mac"))
+            with self.assertRaises(llm.LLMError) as cm:
+                llm._http_json("https://x/v1/messages", {}, {}, 10, retries=2)
+            self.assertIn("SSLError", str(cm.exception))
+        finally:
+            urllib.request.urlopen, llm.time.sleep = old_open, old_sleep
+
+
 class TestAgentEndToEnd(unittest.TestCase):
     def test_mock_analysis(self):
         with tempfile.TemporaryDirectory() as d:

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: analysis stopped by a transient network error.** A TLS error while reading the model's answer (`ssl.SSLError: bad record mac`, seen on the full KAPE + memory + PCAP case) was not retried and ended the analysis. Every network error (TLS, connection reset, timeout, truncated answer) is now retried like HTTP 429 / 5xx, with the same back-off. The state was saved: `analyze` continues from the interrupted step.
+- Tests: 49 tests, including the retry of a TLS error and of a connection reset.
+
 ## 0.9.6 (2026-10-20)
 
 - **Network capture analysis with Suricata.** Captures in `<case>\pcap\` (or `parse <case> --pcap <file>`, repeatable) are analyzed by the new `suricata` job: SHA-256 of the captures, offline configuration derived from the shipped `suricata.yaml`, one Suricata run per capture. EVE output split by event type (`raw.suricata_*`), alerts in `detections`, flows / DNS / HTTP / TLS / files in the timeline.

@@ -75,7 +75,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 48 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 49 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -253,7 +253,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (48 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (49 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```

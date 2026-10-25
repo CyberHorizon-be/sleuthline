@@ -25,6 +25,7 @@ Internal (neutral) messages:
 from __future__ import annotations
 
 import copy
+import http.client
 import json
 import os
 import re
@@ -94,8 +95,11 @@ def _http_json(url: str, payload: dict, headers: dict, timeout: int, retries: in
                 delay = min(delay * 2, 120)
                 continue
             raise LLMError(last)
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            last = f"network: {e}"
+        except (OSError, http.client.HTTPException) as e:
+            # Transient network failures, retried: DNS / connection refused (URLError), timeout,
+            # connection reset, TLS errors while reading the answer (ssl.SSLError, e.g.
+            # "bad record mac" on an unstable link) and truncated answers (IncompleteRead).
+            last = f"network: {type(e).__name__}: {e}"
             time.sleep(delay)
             delay = min(delay * 2, 120)
     raise LLMError(f"failed after {retries} attempts: {last}")
