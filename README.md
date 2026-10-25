@@ -596,7 +596,7 @@ Found during the tests, planned for the next versions:
 - **A case without KAPE collection** (memory image or captures only) needs an empty folder `C` in the case, and the collection must be at the root of the case or in `raw\` (a folder named `kape` is not found).
 - **Steps without data still run**: with a memory image or a capture only, the disk steps of the playbook still call the model (cost and time for nothing).
 - **One host per case.** Local-time sources are converted with the time zone of the case's host; clock offsets between sources (e.g. capture vs host, one hour on Case 001) are found by the agent, not computed by the program.
-- **Validation**: tested on two public cases (four runs). A full installation from scratch with Volatility 3, Suricata and Npcap has not been tested yet (on the test VM they were added to an existing installation).
+- **Validation**: tested on two public cases (four runs). The installation was tested on the test VM: clean installation from GitHub with `Install-All.ps1`, then Volatility 3, Suricata and Npcap with `02_Install-Tools.ps1`.
 - **Suricata (Windows build)**: 9 recent ET Open rules are rejected (`file.magic`), and `threshold.config` is missing (warning only).
 - **Reports and summaries**: without a KAPE collection the report shows `?` as main system; the parse summary shows the sum of the Volatility plugin durations, not the elapsed time; Volatility warnings (registry keys incomplete in memory) are not shown in the job status.
 
