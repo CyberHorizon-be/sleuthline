@@ -1,6 +1,6 @@
 # Sleuthline
 
-**From a KAPE collection, a memory image and network captures to an evidence-backed incident response report.**
+**A DFIR evidence platform with an AI investigation layer: from a KAPE collection, a memory image and network captures to an evidence-backed incident response report.**
 
 Sleuthline is a Windows DFIR pipeline for an isolated analysis VM. It takes a KAPE triage collection (e.g. `!SANS_Triage`) and, if you have them, a memory image of the machine and network captures of the incident, parses them with recognized forensic tools (Volatility 3 for the memory, Suricata for the network), normalizes every output into a single DuckDB database with a UTC timeline, then lets an LLM agent investigate the case step by step and write a technical Word report in which **every finding cites verifiable records** of the database.
 
@@ -24,7 +24,7 @@ Network captures ──────────────────> 2. pars
 ```
 
 - **Recognized tools only.** EZTools, Hayabusa, Chainsaw, Zircolite, SigmaHQ, Dissect, plaso, Hindsight, SIDR, LogFileParser, BitsParser, bmc-tools, odl.py, Volatility 3, Suricata (ET Open rules). A custom parser is written only when no tool exists (`pipeline\docs\POLICY_parsers.md`).
-- **Evidence first.** Read-only collection, memory image and captures, integrity check against the KAPE SHA-1, SHA-256 of the memory image and of the captures, working copies for tools that write into databases, every timeline row and finding traceable to `<output>#<record>` and to the original path on the machine.
+- **Evidence first.** Read-only collection, memory image and captures, integrity check against the KAPE SHA-1, SHA-256 of the memory image and of the captures, conservation checks from each tool output to the timeline, provenance of every timestamp, coverage of every artifact computed by the program, working copies for tools that write into databases, every timeline row and finding traceable to `<output>#<record>` and to the original path on the machine.
 - **Disk, memory and network together.** The memory image shows what was running at the moment of the capture (processes, injected code, network connections, services); the network captures show what crossed the wire (alerts, connections, DNS, HTTP, TLS, transferred files). Dedicated playbook steps confront them with the disk artifacts, and the evidence policy counts disk, memory and network as independent sources.
 - **Any model.** Claude (default), any OpenAI-compatible API, or a local model (Ollama, LM Studio, vLLM) so that no data leaves the VM.
 - **Reproducible.** Tool versions locked in `install\tools-lock.json`, pipeline version (git commit) recorded in the database and the report, tests and regression references.
@@ -77,7 +77,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 49 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 57 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -103,8 +103,7 @@ Each step, what to look at between them and how to fill in the guidance file: **
 **With a memory image.** Put it in `<case>\memory\` before `parse`: the `volatility` job runs with the other tools, nothing else changes. As run on [DFIR Madness Case 001](https://dfirmadness.com/the-stolen-szechuan-sauce/), with the memory image only (installation that already existed, updated with `.\install\02_Install-Tools.ps1 -Only Volatility,Pipeline`):
 
 ```powershell
-#   extract DESKTOP-SDN1RPT.mem to C:\Sleuthline\cases\test02\memory\
-New-Item -ItemType Directory -Force C:\Sleuthline\cases\test02\C            # empty: no KAPE collection in this case
+#   extract DESKTOP-SDN1RPT.mem to C:\Sleuthline\cases\test02\memory\   (nothing else in the case)
 C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test02
 C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test02   # 11 minutes: 58 Volatility plugins
 C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test02   # about 1 minute
@@ -116,8 +115,7 @@ Details and results: **[Memory (Volatility 3)](#memory-volatility-3)**.
 **With network captures.** Put them in `<case>\pcap\` before `parse`: the `suricata` job runs with the other tools. As run on the same case, with the capture only (installation that already existed, updated with `.\install\02_Install-Tools.ps1 -Only Suricata,Pipeline -Force -InstallNpcap`, which also installed Npcap):
 
 ```powershell
-#   extract case001.pcap to C:\Sleuthline\cases\test03\pcap\
-New-Item -ItemType Directory -Force C:\Sleuthline\cases\test03\C            # empty: no KAPE collection in this case
+#   extract case001.pcap to C:\Sleuthline\cases\test03\pcap\   (nothing else in the case)
 C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test03
 C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test03   # 12 seconds: Suricata
 C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test03   # under 1 minute
@@ -126,12 +124,13 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test03   # 6
 
 Details and results: **[Network captures (Suricata)](#network-captures-suricata)**.
 
-**With the three sources (full case).** As run on the same workstation, 1.0: the disk image `DESKTOP-E01` (4 segments) mounted read-only with Arsenal Image Mounter (Windows partition as `F:`), then a KAPE collection with the KAPE GUI, into a `kape` folder renamed `raw` (the collection must be at the root of the case or in `raw\`); the memory image and the capture copied from the two previous cases:
+A case may contain any combination of the three sources. Since 1.1 the inventory detects them (`inventory\sources.json`) and accepts a case without KAPE collection; with 1.0 these two runs needed an empty `C` folder in the case.
+
+**With the three sources (full case).** As run on the same workstation, 1.0: the disk image `DESKTOP-E01` (4 segments) mounted read-only with Arsenal Image Mounter (Windows partition as `F:`), then a KAPE collection with the KAPE GUI, into a `kape` folder (renamed `raw` for 1.0; since 1.1 the collection is found at the root of the case, in `raw\`, in `kape\` or in any single sub-folder holding a `*_CopyLog.csv`); the memory image and the capture copied from the two previous cases:
 
 ```powershell
 #   KAPE (GUI): --tsource F: --tdest C:\Sleuthline\cases\test04\kape --tflush --target !SANS_Triage
-Rename-Item C:\Sleuthline\cases\test04\kape raw
-#   C:\Sleuthline\cases\test04\  ->  raw\ (CopyLog + F\), memory\DESKTOP-SDN1RPT.mem, pcap\case001.pcap
+#   C:\Sleuthline\cases\test04\  ->  kape\ (CopyLog + F\), memory\DESKTOP-SDN1RPT.mem, pcap\case001.pcap
 C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test04   # INTACT, 2,703 files
 C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test04   # 25 minutes: disk tools, Volatility, Suricata
 C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test04   # about 1 minute
@@ -267,7 +266,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (49 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (57 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```
@@ -451,7 +450,7 @@ A memory image of the same machine can be analyzed with the collection. Put it i
 - **In the database:** one table per plugin (`raw.vol_pslist`, `raw.vol_netscan`, `raw.vol_malfind`...); tree outputs are flattened with a `TreeDepth` column. Process creations, network endpoints, DLL loads and the other timestamped records go into the timeline with an artifact name starting with `Memory:`.
 - **Analysis:** step 4 of the playbook examines the memory and confronts it with the disk. For the evidence policy, everything from the memory image counts as **one** source, distinct from the disk artifacts: a critical finding is `confirmed` with a memory record and a disk record, not with two memory records.
 
-**As tested on Case 001 (memory image only, no KAPE collection).** On an installation that already existed, Volatility 3 and the new pipeline were installed with `.\install\02_Install-Tools.ps1 -Only Volatility,Pipeline` (Volatility 3 2.28.2). The `inventory` step needs a KAPE collection: for a case with only a memory image, an empty folder `C` in the case is enough.
+**As tested on Case 001 (memory image only, no KAPE collection).** On an installation that already existed, Volatility 3 and the new pipeline were installed with `.\install\02_Install-Tools.ps1 -Only Volatility,Pipeline` (Volatility 3 2.28.2). With 1.0, the `inventory` step needed a KAPE collection: an empty folder `C` was created in the case (not needed since 1.1).
 
 ```powershell
 New-Item -ItemType Directory -Force C:\Sleuthline\cases\test02\memory       # then extract DESKTOP-SDN1RPT.mem into it
@@ -475,9 +474,9 @@ Network captures of the same incident can be analyzed with the collection. Put t
 - **Installation:** the Suricata Windows MSI is **extracted** (`msiexec /a`), not installed: no service, no driver, nothing in Program Files. The Windows build of Suricata needs `wpcap.dll`, provided by Npcap, a network driver: installing it is your decision. With `-InstallNpcap` (`02_Install-Tools.ps1` or `Install-All.ps1`), if `suricata.exe` does not start, the installer downloads the latest Npcap from npcap.com and opens its installer window in WinPcap API-compatible mode (the free edition has no silent install).
 - **Analysis:** step 5 of the playbook examines the traffic and confronts it with the disk and the memory. For the evidence policy, everything from the captures counts as **one** source, distinct from the disk and the memory.
 
-**As tested on Case 001 (network capture only, no KAPE collection).** On the existing installation, `.\install\02_Install-Tools.ps1 -Only Suricata,Pipeline -Force -InstallNpcap` extracted Suricata 8.0.7, installed Npcap 1.89 (its installer window had to be completed), and installed the ET Open rules for Suricata 8.0.7 (68,731 rules, 52,834 enabled). As for the memory, an empty folder `C` in the case replaces the KAPE collection (see the commands in [How to run it](#how-it-works-and-how-to-run-it)).
+**As tested on Case 001 (network capture only, no KAPE collection).** On the existing installation, `.\install\02_Install-Tools.ps1 -Only Suricata,Pipeline -Force -InstallNpcap` extracted Suricata 8.0.7, installed Npcap 1.89 (its installer window had to be completed), and installed the ET Open rules for Suricata 8.0.7 (68,731 rules, 52,834 enabled). As for the memory, 1.0 needed an empty folder `C` in the case (not since 1.1).
 
-- **Parsing:** 12 seconds for `case001.pcap` (198 MB, 411,797 packets). 52,825 rules loaded: 9 recent ET Open rules are rejected by the Windows build of Suricata (keyword `file.magic`), and a warning says that `threshold.config` is missing (not in the MSI; it only limits repeated alerts).
+- **Parsing:** 12 seconds for `case001.pcap` (198 MB, 411,797 packets). 52,825 rules loaded: 9 recent ET Open rules are rejected by the Windows build of Suricata (keyword `file.magic`), and, with 1.0, a warning said that `threshold.config` is missing (not in the MSI; since 1.1 an empty one is written next to the configuration, and the rejected rules are listed in the job log).
 - **Normalization:** 13 `suricata_*` tables, 99,868 timeline rows, 461 detections (7 high, 4 medium, 450 low). Times are converted to UTC (Suricata writes them in the time zone of the analysis VM).
 - **Analysis:** 14 steps, 159 model calls, 22 findings and 12 IOCs (IPs, URL, MD5 / SHA-1 / SHA-256 of `coreupdater.exe`, JA3 / JA4 of the brute-force client). Execution and persistence on the hosts are `probable`, not `confirmed`: they are inferred from the traffic, without host artifacts.
 
@@ -492,12 +491,14 @@ The database is fully rebuilt at each run (written to a temporary file, then rep
 | Object | Content |
 |---|---|
 | `raw.<table>` | One table per output type. Every column as text, untransformed, with `_src_file` (original output under `parsed\`) and `_src_row` (record number: CSV data line or JSONL line). |
-| `timeline` | Unified timeline in **UTC**. One row per record and timestamp; identical timestamps of a same record are merged (e.g. `$SI modification (M) ; $SI access (A)`). Columns: `ts`, `ts_desc`, `artifact`, `category`, `tool`, `host`, `user_name`, `path`, `description`, `evidence`, `ref`, `mapping`. |
+| `timeline` | Unified timeline in **UTC**. One row per record and timestamp; identical timestamps of a same record are merged (e.g. `$SI modification (M) ; $SI access (A)`). Columns: `ts`, `ts_desc`, `artifact`, `category`, `tool`, `host`, `user_name`, `path`, `description`, `evidence`, `ref`, `mapping`, and (1.1) the provenance of the time: `ts_original` (raw value written by the tool), `ts_conversion` (`utc`, `offset` = explicit offset in the value, `local_bias` = local time converted with the host's ActiveTimeBias, `auto`), `ts_tz_detail`, `ts_confidence` (`high`, `medium` for local times, `low` for automatic mappings) and `clock_offset_s` (reserved for the clock offset between sources). |
 | `detections` | Hayabusa, Chainsaw and Zircolite alerts: rule, normalized level, channel, EventID, RecordID, details, tactics. |
 | `timeline_all` | View: timeline + detections. |
 | `hashset`, `hash_hits` | Offline hash lists (`<root>\pipeline\local\hashsets\` and `<case>\hashsets\`: `known_bad*.txt`, `known_good*.txt` such as an NSRL extract, any other name = `watch`) and their matches with every hash column of the database (Amcache SHA1...) **and the hashes embedded in the EVTX** (Sysmon `Hashes` field, Hayabusa / Zircolite details). |
 | `artifact_summary` | View: row count and period covered per artifact. |
 | `sources` | Every file of `parsed\`: status (loaded, empty, ignored, error), table, rows, rejected rows, SHA-256. |
+| `coverage` | (1.1) What happened to every kind of artifact, computed from the inventory, the parsing jobs and the loaded tables: `not_collected` (absent from the case), `not_covered` (no installed tool), `not_parsed` (the tool failed or did not run), `empty` (parsed, no record), `analyzed`. The agent must check it before writing that something was not found; the report lists it in an appendix. |
+| `conservation` | (1.1) Checks that nothing was lost silently: records counted in each output file = rows loaded + rows rejected (`file_to_raw`); rows written by Volatility and EVE events of Suricata = rows of their outputs (`tool_to_output`); a mapped table whose dates are present but none understood is a failure (`raw_to_timeline`). Summary at the top of `normalize_report.md` and in the report's traceability appendix. |
 | `jobs`, `meta` | Status of the parsing jobs; normalization parameters (version and SHA-256 of the mapping table, time zone, pipeline version, collection integrity). |
 
 **Citing evidence.** `ref` is `<output>#<record number>`, which points to the exact line in `parsed\`. `evidence` is the original path of the artifact on the analyzed machine (`C:\Windows\System32\winevt\logs\Security.evtx`, not the copy in the case folder).
@@ -522,9 +523,9 @@ The database is fully rebuilt at each run (written to a temporary file, then rep
 C:\Sleuthline\pipeline\sleuthline.ps1 analyze "C:\Sleuthline\cases\<case>"   # full analysis + Word report
 ```
 
-**Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. memory (RAM), only if a memory image was analyzed; 5. network traffic, only if captures were analyzed; 6. persistence; 7. accounts and authentication; 8. remote access and lateral movement; 9. file activity; 10. web browsing; 11. anti-forensics; 12. exfiltration; 13. incident timeline; 14. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely.
+**Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. memory (RAM); 5. network traffic; 6. persistence; 7. accounts and authentication; 8. remote access and lateral movement; 9. file activity; 10. web browsing; 11. anti-forensics; 12. exfiltration; 13. incident timeline; 14. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely. A step dedicated to one kind of evidence declares it under its title (`Requires: memory` for step 4, `Requires: network` for step 5): when the case does not contain it, the step is recorded as not applicable without calling the model. The other steps always run: every source feeds almost every step (memory holds MFT records, registry and browser traces; a capture holds downloads, Kerberos / SMB and transferred files). The agent is told at the start which sources the case contains.
 
-**Agent tools.** SQL query, search, time window, evidence detail; it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
+**Agent tools.** SQL query, search, time window, evidence detail, coverage of the evidence; it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
 
 **Guarantees.** They are enforced by the program (`4_analysis\guards.py`), not requested from the model:
 
@@ -587,18 +588,17 @@ C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\ru
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py --regression C:\Sleuthline\cases\test01
 ```
 
-The fast tests (about ten seconds) cover the SQL safeguards of the agent, the evidence policy (independent sources, automatic mappings, answers without evidence), the untrusted-evidence blocks and injection detection, the guidance, step replay, DuckDB macros, hash extraction, inventory and integrity, the internal parsers, the payload sent to Claude, and an end-to-end analysis with the `mock` provider. `--regression` (optional) normalizes one of your own cases into a temporary database and compares the row count per artifact with a reference: the first run records it in `tests\golden\<case>.json` (local, ignored by git), later runs detect any parser or mapping change that adds or loses rows (`--update-golden` after an intended change).
+The fast tests (about ten seconds) cover the SQL safeguards of the agent, the evidence policy (independent sources, automatic mappings, answers without evidence), the untrusted-evidence blocks and injection detection, the guidance, step replay, DuckDB macros, hash extraction, inventory and integrity, the internal parsers, the payload sent to Claude, the detection of the sources of a case, the steps that require a source, the coverage and conservation tables, the timestamp provenance, and an end-to-end analysis with the `mock` provider. `--regression` (optional) normalizes one of your own cases into a temporary database and compares the row count per artifact with a reference: the first run records it in `tests\golden\<case>.json` (local, ignored by git), later runs detect any parser or mapping change that adds or loses rows (`--update-golden` after an intended change).
 
-## Known limitations of 1.0
+## Known limitations
 
 Found during the tests, planned for the next versions:
 
-- **A case without KAPE collection** (memory image or captures only) needs an empty folder `C` in the case, and the collection must be at the root of the case or in `raw\` (a folder named `kape` is not found).
-- **Steps without data still run**: with a memory image or a capture only, the disk steps of the playbook still call the model (cost and time for nothing).
-- **One host per case.** Local-time sources are converted with the time zone of the case's host; clock offsets between sources (e.g. capture vs host, one hour on Case 001) are found by the agent, not computed by the program.
+- **One host per case.** Local-time sources are converted with the time zone of the case's host; clock offsets between sources (e.g. capture vs host, one hour on Case 001) are found by the agent, not computed by the program (`clock_offset_s` is reserved for it).
+- **Steps that always run**: only the steps dedicated to an absent source (memory, network) are skipped. With a memory image or a capture only, the other steps still call the model, on purpose (they found critical and high findings on the memory-only and network-only cases).
 - **Validation**: tested on two public cases (four runs). The installation was tested on the test VM: clean installation from GitHub with `Install-All.ps1`, then Volatility 3, Suricata and Npcap with `02_Install-Tools.ps1`.
-- **Suricata (Windows build)**: 9 recent ET Open rules are rejected (`file.magic`), and `threshold.config` is missing (warning only).
-- **Reports and summaries**: without a KAPE collection the report shows `?` as main system; the parse summary shows the sum of the Volatility plugin durations, not the elapsed time; Volatility warnings (registry keys incomplete in memory) are not shown in the job status.
+- **Suricata (Windows build)**: 9 recent ET Open rules are rejected (`file.magic`); since 1.1 they are listed in the job log.
+- **Conservation checks** compare tool counts only for Volatility and Suricata; for the other tools, the file → table and table → timeline checks apply.
 
 ## Known issues
 

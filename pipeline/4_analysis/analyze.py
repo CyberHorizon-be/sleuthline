@@ -62,7 +62,9 @@ DEFAULT_LIMITS = {"max_tool_calls_per_step": 40, "max_result_chars": 15000, "max
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 CONFIDENCES = ["confirmed", "probable", "possible"]
 UNDETERMINED = "undetermined"
-DONE, RUNNING = "done", "running"
+DONE, RUNNING, NOT_APPLICABLE = "done", "running", "not_applicable"
+SOURCE_KINDS = ("disk", "memory", "network")
+SOURCE_LABEL = {"disk": "disk collection", "memory": "memory image", "network": "network capture"}
 LANGUAGES = {"en": "English", "fr": "French", "de": "German", "nl": "Dutch", "es": "Spanish", "it": "Italian",
              "pt": "Portuguese"}
 
@@ -124,12 +126,57 @@ def parse_playbook(path: Path):
         title = title.strip()
         m = re.match(r"(?i)step\s+(\d+)\s*[:\-—]\s*(.+)", title)
         if m:
-            steps.append({"num": int(m.group(1)), "title": m.group(2).strip(), "body": body.strip()})
+            requires, body = parse_requires(body)
+            steps.append({"num": int(m.group(1)), "title": m.group(2).strip(), "body": body.strip(), "requires": requires})
         elif title.lower().startswith("rules"):
             rules = body.strip()
     if not steps:
         raise SystemExit(f"No step (\"## Step N: title\") in {path}")
     return rules, steps
+
+
+def parse_requires(body: str):
+    """Optional first line of a step: "Requires: memory" (or network, disk; several separated by |).
+    The step needs at least one of these sources. Missing line or "any": the step always runs."""
+    lines = body.strip("\n").split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines:
+        m = re.fullmatch(r"(?i)\s*requires\s*:\s*(.+?)\s*", lines[0])
+        if m:
+            vals = [v.strip().lower() for v in m.group(1).split("|") if v.strip()]
+            bad = [v for v in vals if v not in SOURCE_KINDS + ("any",)]
+            if bad:
+                raise SystemExit(f"Playbook: unknown source in \"{lines[0].strip()}\" ({', '.join(bad)}): "
+                                 f"use any, {', '.join(SOURCE_KINDS)}")
+            return (None if "any" in vals or not vals else set(vals)), "\n".join(lines[1:])
+    return None, body
+
+
+def step_applicable(step: dict, sources: dict) -> tuple[bool, str]:
+    """A step is skipped only when it declares Requires: and none of the required sources is present."""
+    req = step.get("requires")
+    if not req:
+        return True, ""
+    if any((sources.get(k) or {}).get("present") for k in req):
+        return True, ""
+    return False, "no " + " and no ".join(SOURCE_LABEL[k] for k in sorted(req)) + " in this case"
+
+
+def sources_line(sources: dict) -> str:
+    have, missing = [], []
+    for k in SOURCE_KINDS:
+        s = sources.get(k) or {}
+        if not s.get("present"):
+            missing.append(SOURCE_LABEL[k])
+        elif k == "disk":
+            have.append(f"disk collection ({s.get('files', '?')} files)")
+        elif k == "memory":
+            have.append("memory image (" + ", ".join(Path(i.get("path", "")).name for i in s.get("images", [])) + ")")
+        else:
+            have.append(f"network capture(s) ({len(s.get('captures', []))} file(s))")
+    out = "Sources in this case: " + (", ".join(have) or "none") + "."
+    return out + (" No " + ", no ".join(missing) + "." if missing else "")
 
 
 # Guidance sections
@@ -240,6 +287,25 @@ class CaseDB:
         self.src_to_table = dict(self.con.execute(
             "SELECT src_file, raw_table FROM sources WHERE raw_table IS NOT NULL").fetchall())
 
+    def has_table(self, name: str) -> bool:
+        return bool(self.con.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'main' "
+                                     "AND table_name = ?", [name]).fetchone()[0])
+
+    def sources(self) -> dict:
+        """Sources of the case: meta 'sources' (inventory\\sources.json, 1.1+), otherwise derived from the tables
+        (database built before 1.1)."""
+        try:
+            row = self.con.execute("SELECT value FROM meta WHERE key = 'sources'").fetchone()
+            if row and row[0].startswith("{"):
+                return json.loads(row[0])
+        except (duckdb.Error, ValueError):
+            pass
+        vol = any(t.startswith("vol_") for t in self.raw_tables)
+        net = any(t.startswith("suricata_") or t == "pcap_files" for t in self.raw_tables)
+        disk = any(not (t.startswith("vol_") or t.startswith("suricata_") or t == "pcap_files") for t in self.raw_tables)
+        return {"disk": {"present": disk}, "memory": {"present": vol, "images": []},
+                "network": {"present": net, "captures": []}}
+
     # -- queries -------------------------------------------------------------------------
     def check_sql(self, sql: str):
         s = strip_strings(strip_sql_comments(sql)).strip().rstrip(";").strip()
@@ -343,7 +409,7 @@ class CaseDB:
 
     # -- overview for the prompt ---------------------------------------------------------
     def overview(self) -> str:
-        parts = []
+        parts = [sources_line(self.sources())]
         meta = dict(self.run("SELECT key, value FROM meta", max_rows=100)[1])
         parts.append("Metadata: " + json.dumps({k: meta.get(k) for k in (
             "case", "normalized_at_utc", "machine_active_time_bias_min", "timezone", "ref_format", "map_version")}, ensure_ascii=False))
@@ -358,6 +424,9 @@ class CaseDB:
             n_hs = self.run("SELECT count(*) FROM hashset", max_rows=1)[1][0][0]
             parts.append(f"Offline hash lists ({n_hs} hashes loaded; table hash_hits):\n"
                          + (format_table(cols, rows, 4000) if rows else "no match in the database"))
+        if self.has_table("coverage"):
+            cnt = self.run("SELECT status, count(*) FROM coverage GROUP BY 1 ORDER BY 1", max_rows=10)[1]
+            parts.append("Coverage (tool coverage, details with the coverage tool): " + ", ".join(f"{s} {n}" for s, n in cnt))
         cols, rows = self.run("SELECT dir AS job, status, title FROM jobs WHERE status <> 'ok' ORDER BY 1", max_rows=100)
         if rows:
             parts.append("Parsing jobs not 'ok' (incomplete sources):\n" + format_table(cols, rows, 3000))
@@ -370,11 +439,12 @@ class CaseDB:
         parts.append("Raw tables (text columns; _src_file, _src_row always present):\n" + "\n".join(lines))
         parts.append("Main tables:\n"
                      "timeline(tl_id, ts TIMESTAMP UTC, ts_desc, artifact, category, tool, host, user_name, path, description, evidence, "
-                     "src_table, src_file, src_row, source_id, mapping, ref)\n"
+                     "src_table, src_file, src_row, source_id, mapping, ts_original, ts_conversion (utc / offset / local_bias / auto), "
+                     "ts_tz_detail, ts_confidence (high / medium / low), clock_offset_s (reserved), ref)\n"
                      "detections(det_id, ts, engine, rule_title, rule_id, level, computer, channel, event_id, record_id, details, tactics, "
                      "evidence, src_table, src_file, src_row, ref)\n"
                      "hash_hits(list known_bad/known_good/watch, algo, hash, label, src_table, src_column, ref, source_file), hashset\n"
-                     "timeline_all (view timeline + detections), artifact_summary, sources, jobs, meta")
+                     "timeline_all (view timeline + detections), artifact_summary, sources, jobs, meta, coverage, conservation")
         return "\n\n".join(parts)
 
 
@@ -469,6 +539,12 @@ TOOLS = [
                                                     "limit": {"type": "integer"}}, "required": ["start", "end"]}},
     {"name": "get_evidence", "description": "Full detail (raw record) of evidence references.",
      "parameters": {"type": "object", "properties": {"refs": REFS}, "required": ["refs"]}},
+    {"name": "coverage", "description": "What happened to each kind of artifact, computed by the program: not_collected (absent "
+     "from the case), not_covered (no tool), not_parsed (tool failed / missing), empty (parsed, 0 record), analyzed (records "
+     "in the database). Check it before writing that something was not found.",
+     "parameters": {"type": "object", "properties": {"status": {"type": "string", "enum": ["not_collected", "not_covered", "not_parsed", "empty", "analyzed"]},
+                                                    "source": {"type": "string", "enum": ["disk", "memory", "network"]},
+                                                    "contains": {"type": "string", "description": "text in the artifact name"}}}},
     {"name": "add_finding", "description": "Records an evidence-backed finding (refused if a reference does not exist).",
      "parameters": {"type": "object", "properties": {
          "title": {"type": "string"}, "severity": {"type": "string", "enum": SEVERITIES},
@@ -563,6 +639,24 @@ class Agent:
 
     def t_sql_query(self, sql, max_rows=None):
         return self.db.query_text(sql, max_rows)
+
+    def t_coverage(self, status=None, source=None, contains=None):
+        if not self.db.has_table("coverage"):
+            return "No coverage table (database normalized before 1.1): use the sources and jobs tables."
+        where, params = [], []
+        for col, val in (("status", status), ("source", source)):
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        if contains:
+            where.append("artifact ILIKE ?")
+            params.append(f"%{contains}%")
+        sql = ("SELECT artifact, source, status, tool, rows, detail FROM coverage"
+               + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY source, status, artifact")
+        cols, rows = self.db.run(sql, params, max_rows=300)
+        counts = self.db.run("SELECT status, count(*) FROM coverage GROUP BY 1 ORDER BY 1", max_rows=10)[1]
+        return ("Counts: " + ", ".join(f"{s} {n}" for s, n in counts) + "\n"
+                + format_table(cols, rows, self.limits["max_result_chars"]))
 
     def t_describe_table(self, table):
         t = table.strip()
@@ -761,7 +855,7 @@ class Agent:
 
     # -- prompts ---------------------------------------------------------------------------
     def system_prompt(self, overview: str) -> str:
-        return f"""You are a senior DFIR analyst (incident response, Windows forensics). You analyze the DuckDB database of a case, built from a KAPE collection parsed by recognized tools (EZTools, Hayabusa, Chainsaw, Zircolite, Dissect, plaso, etc.).
+        return f"""You are a senior DFIR analyst (incident response, Windows forensics). You analyze the DuckDB database of a case, built from the evidence of the case (KAPE collection, memory image, network captures: the first line of the database structure says which ones) parsed by recognized tools (EZTools, Hayabusa, Chainsaw, Zircolite, Dissect, plaso, Volatility 3, Suricata, etc.).
 You work only with the tools provided. Write every finding, event, answer, summary and recommendation in {self.language}, in a very technical and precise way.
 
 {self.untrusted.policy_text()}
@@ -1053,6 +1147,21 @@ def main(argv=None):
                     agent.ioc_sweep()
                 sel = select_steps(args.steps, steps)
                 todo = [s for s in steps if s["num"] in sel and (args.force or state.d["steps"].get(str(s["num"]), {}).get("status") != DONE)]
+                sources = db.sources()
+                runnable = []
+                for step in todo:
+                    ok, reason = step_applicable(step, sources)
+                    if ok:
+                        runnable.append(step)
+                        continue
+                    # Step dedicated to a source the case does not contain: no model call
+                    state.purge_step(step["num"])
+                    state.d["steps"][str(step["num"])] = {"title": step["title"], "status": NOT_APPLICABLE, "reason": reason,
+                                                         "started": now_utc(), "ended": now_utc(), "duration_s": 0,
+                                                         "tool_calls": 0, "summary": f"Not applicable: {reason}.", "gaps": ""}
+                    state.save()
+                    log(f"Step {step['num']}/{len(steps)}: {step['title']}  [not applicable: {reason}]")
+                todo = runnable
                 durations = []
                 for k, step in enumerate(todo, 1):
                     agent.current_step = step["num"]

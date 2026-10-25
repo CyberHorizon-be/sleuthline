@@ -185,12 +185,66 @@ SERVICE_PROFILE_RX = re.compile(r"\\ServiceProfiles\\([^\\]+)\\", re.IGNORECASE)
 # --------------------------------------------------------------------------
 # Reading the collection
 # --------------------------------------------------------------------------
-def find_collection_root(path: Path) -> Path:
-    """Accepts the case folder or its raw\\ subfolder and returns the KAPE root."""
-    for candidate in (path, path / "raw"):
-        if candidate.is_dir() and (list(candidate.glob("*_CopyLog.csv")) or _volume_dirs(candidate)):
+# Sub-folders of a case that are never a KAPE collection
+CASE_RESERVED_DIRS = {"memory", "pcap", "inventory", "parsed", "db", "analysis", "hashsets"}
+
+
+def _is_collection(folder: Path) -> bool:
+    return folder.is_dir() and bool(list(folder.glob("*_CopyLog.csv")) or _volume_dirs(folder))
+
+
+def find_collection_root(path: Path) -> Path | None:
+    """KAPE collection of a case: the case folder itself, <case>\\raw\\, <case>\\kape\\, otherwise the single
+    sub-folder of the case that holds a *_CopyLog.csv. None if the case has no collection (memory image
+    or captures only). Several candidate sub-folders: stop, no guessing."""
+    for candidate in (path, path / "raw", path / "kape"):
+        if _is_collection(candidate):
             return candidate
-    raise SystemExit(f"No KAPE collection found in {path} (neither *_CopyLog.csv nor a volume folder)")
+    if not path.is_dir():
+        return None
+    others = [d for d in sorted(path.iterdir()) if d.is_dir() and d.name.lower() not in CASE_RESERVED_DIRS
+              and list(d.glob("*_CopyLog.csv"))]
+    if len(others) > 1:
+        raise SystemExit("Several KAPE collections in " + str(path) + ": " + ", ".join(d.name for d in others)
+                         + ". Keep one per case (in raw\\ for instance).")
+    return others[0] if others else None
+
+
+def detect_sources(case: Path, root: Path | None, summary: dict | None) -> dict:
+    """The three kinds of evidence of a case: disk (KAPE collection), memory (<case>\\memory\\),
+    network (<case>\\pcap\\). Written to inventory\\sources.json, read by every later step."""
+    sys.path.insert(0, str(PIPE / "2_parsing"))
+    import memory as _memory      # noqa: E402  (standard library only)
+    import network as _network    # noqa: E402
+    images = _memory.find_images(case)
+    captures = _network.find_captures(case)
+    integ = (summary or {}).get("integrity") or {}
+    return {
+        # a collection folder without any file (e.g. the empty "C" folder used with 1.0) is no collection
+        "disk": {"present": root is not None and (summary or {}).get("files_total", 0) > 0,
+                 "root": str(root) if root else None,
+                 "files": (summary or {}).get("files_total", 0), "integrity": integ.get("verdict")},
+        "memory": {"present": bool(images),
+                   "images": [{"path": str(i), "bytes": i.stat().st_size} for i in images]},
+        "network": {"present": bool(captures),
+                    "captures": [{"path": str(c), "bytes": c.stat().st_size} for c in captures]},
+    }
+
+
+def sources_line(sources: dict) -> str:
+    """One line for humans and for the agent: what the case contains and what it does not."""
+    have, missing = [], []
+    d, m, n = sources.get("disk", {}), sources.get("memory", {}), sources.get("network", {})
+    (have if d.get("present") else missing).append(
+        f"disk collection ({d.get('files', 0)} files)" if d.get("present") else "disk collection")
+    (have if m.get("present") else missing).append(
+        "memory image (" + ", ".join(Path(i["path"]).name for i in m.get("images", [])) + ")" if m.get("present") else "memory image")
+    (have if n.get("present") else missing).append(
+        f"network capture(s) ({len(n.get('captures', []))} file(s))" if n.get("present") else "network capture")
+    out = "Sources in this case: " + (", ".join(have) or "none") + "."
+    if missing:
+        out += " No " + ", no ".join(missing) + "."
+    return out
 
 
 def _volume_dirs(root: Path) -> list[Path]:
@@ -391,14 +445,14 @@ def apply_registry(registry_path: Path) -> dict:
 # --------------------------------------------------------------------------
 # Report
 # --------------------------------------------------------------------------
-def build(root: Path, manifest_path: Path, verify: bool = True):
-    copylog = load_copylog(root)
+def build(root: Path | None, manifest_path: Path, verify: bool = True):
+    copylog = load_copylog(root) if root else {}
     parsers = load_parsers(manifest_path)
     if manifest_path.is_file():
         check_registry_keys(parsers)
 
     records = []
-    for full, rel, origin in iter_files(root):
+    for full, rel, origin in (iter_files(root) if root else []):
         origin_nv = origin[1:] if re.match(r"^[A-Za-z]\\", origin) else origin  # strip the volume letter
         art = classify(origin_nv)
         meta = copylog.get(rel.lower(), {})
@@ -451,7 +505,7 @@ def build(root: Path, manifest_path: Path, verify: bool = True):
     unclassified = by_art.get("unclassified", [])
     gaps = build_gaps(coverage, unclassified)
     summary = {
-        "collection_root": str(root),
+        "collection_root": str(root) if root else None,
         "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "manifest": str(manifest_path),
         "files_total": len(records),
@@ -511,7 +565,8 @@ def render_md(coverage, unclassified, summary, gaps=None) -> str:
     out = [
         "# Collection inventory and coverage",
         "",
-        f"- Collection: `{summary['collection_root']}`",
+        f"- Collection: `{summary['collection_root']}`" if summary["collection_root"] else
+        "- Collection: **none** (no KAPE collection in this case: memory image and/or network captures only)",
         f"- Files: {summary['files_total']} ({human(summary['bytes_total'])})",
         f"- Users: {', '.join(summary['users']) or '-'}",
     ]
@@ -577,6 +632,11 @@ def main(argv=None):
 
     root = find_collection_root(args.case)
     out = args.out or (args.case / "inventory")
+    if root is None:
+        probe = detect_sources(args.case, None, None)
+        if not (probe["memory"]["present"] or probe["network"]["present"]):
+            raise SystemExit(f"No evidence found in {args.case}: no KAPE collection (*_CopyLog.csv or volume folder "
+                             "at the root, in raw\\ or kape\\), no memory image in memory\\, no capture in pcap\\")
     out.mkdir(parents=True, exist_ok=True)
 
     apply_registry(args.registry)
@@ -585,6 +645,8 @@ def main(argv=None):
     (out / "coverage.json").write_text(json.dumps({"summary": summary, "artifacts": coverage}, ensure_ascii=False, indent=1), encoding="utf-8")
     (out / "gaps.json").write_text(json.dumps(gaps, ensure_ascii=False, indent=1), encoding="utf-8")
     (out / "coverage.md").write_text(render_md(coverage, unclassified, summary, gaps), encoding="utf-8")
+    sources = detect_sources(args.case, root, summary)
+    (out / "sources.json").write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
 
     sc = summary["status_counts"]
     print(f"{summary['files_total']} files | {sc[COVERED]} artifacts covered, "
@@ -593,6 +655,7 @@ def main(argv=None):
     if integ:
         print(f"Collection integrity: {integ['verdict']} ({integ['ok']} matching, {integ['mismatch']} different, "
               f"{integ['missing']} missing, {integ['no_reference']} without KAPE hash, {integ['duration_s']} s)")
+    print(sources_line(sources))
     print(f"Report: {out / 'coverage.md'}")
 
 

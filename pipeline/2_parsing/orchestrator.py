@@ -101,7 +101,8 @@ class Context:
                  captures: list[Path] | None = None):
         self.case = case
         self.out = out
-        self.root = Path(inventory["summary"]["collection_root"])
+        root = inventory["summary"].get("collection_root")
+        self.root = Path(root) if root else None        # None: no KAPE collection (memory / captures only)
         self.files_by_art: dict[str, list[dict]] = defaultdict(list)
         for f in inventory["files"]:
             self.files_by_art[f["artifact"]].append(f)
@@ -156,6 +157,8 @@ class Context:
                        if not name_rx or re.search(name_rx, p.name, re.IGNORECASE)])
 
     def volumes(self) -> list[Path]:
+        if self.root is None:
+            return []
         return [p for p in self.root.iterdir() if p.is_dir() and re.fullmatch(r"[A-Za-z]", p.name)]
 
     def has(self, key: str) -> bool:
@@ -843,7 +846,10 @@ JOBS: list[Job] = [
     # --- Memory (image in <case>\memory\ or --memory)
     Job("volatility", f"Volatility 3 - memory image ({len(memory.PLUGINS)} plugins, no secrets, no file extraction)",
         ["memory_image"], ["vol"], j_volatility, parallel=memory.PARALLEL, serial_first=2,
-        note="Not run: " + ", ".join(memory.EXCLUDED)),
+        note="Not run: " + ", ".join(memory.EXCLUDED),
+        # e.g. "WARNING  volatility3.plugins.windows.registry.userassist: Error accessing UserAssist key ...":
+        # data missing from the image (registry pages not in memory)
+        warn_patterns=[r"^WARNING\s+volatility3\."]),
     # --- Network (captures in <case>\pcap\ or --pcap)
     Job("suricata", "Suricata - network captures (alerts and protocol metadata)", ["pcap"], ["suricata"], j_suricata,
         parallel=1, serial_first=2),
@@ -1105,7 +1111,8 @@ def run_steps(job: Job, steps: list[Step], log, env) -> list[dict]:
 def run_job(job: Job, ctx: Context, force: bool, dry_run: bool) -> dict:
     out = ctx.out / job.id
     status_file = out / "_status.json"
-    base = {"job": job.id, "title": job.title, "tools": {k: ctx.tool_of.get(k) for k in job.tools}}
+    base = {"job": job.id, "title": job.title, "artifacts": list(job.artifacts),
+            "tools": {k: ctx.tool_of.get(k) for k in job.tools}}
 
     present = [a for a in job.artifacts if ctx.files_by_art.get(a)]
     if not present:
@@ -1180,7 +1187,9 @@ def run_job(job: Job, ctx: Context, force: bool, dry_run: bool) -> dict:
     if status not in ("failed",) and not outputs:
         status = "empty"          # the tool ran without producing any file
     rec = {**base, "status": status, "started_utc": started, "ended_utc": utcnow(),
-           "duration_s": round(sum(s["duration_s"] for s in step_recs), 1),
+           # elapsed time of the job; cpu_s = sum of its steps (higher when the steps run in parallel)
+           "duration_s": round(dt.datetime.now().timestamp() - t0, 1),
+           "cpu_s": round(sum(s["duration_s"] for s in step_recs), 1),
            "steps": step_recs, "inputs": inputs, "outputs": outputs, "note": job.note,
            "warnings": warnings[:50]}
     status_file.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1209,6 +1218,8 @@ def protect_collection(ctx: Context) -> int:
 def recheck_integrity(ctx: Context, inventory: dict) -> dict | None:
     """Recomputes the SHA-1 after parsing: a file matching the inventory that no longer does was
     modified during parsing (evidence tampering, to be reported)."""
+    if ctx.root is None or not inventory["files"]:
+        return None
     sys.path.insert(0, str(PIPE / "1_inventory"))
     try:
         from inventory import verify_integrity
@@ -1220,6 +1231,29 @@ def recheck_integrity(ctx: Context, inventory: dict) -> dict | None:
     changed = [f["original_path"] for f in recs if f.get("integrity") == "different" and before.get(f["rel_path"]) == "ok"]
     res["changed_during_parsing"] = changed
     return res
+
+
+def update_sources(case: Path, images: list[Path], captures: list[Path], inventory: dict | None = None) -> None:
+    """inventory\\sources.json: memory image and captures actually used (--memory / --pcap may differ from
+    the folders seen by the inventory)."""
+    f = case / "inventory" / "sources.json"
+    try:
+        src = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except (OSError, ValueError):
+        src = {}
+    if "disk" not in src:          # inventory made before 1.1: no sources.json
+        s = (inventory or {}).get("summary", {})
+        src["disk"] = {"present": bool(s.get("collection_root")) and s.get("files_total", 0) > 0,
+                       "root": s.get("collection_root"), "files": s.get("files_total", 0),
+                       "integrity": (s.get("integrity") or {}).get("verdict")}
+    src["memory"] = {"present": bool(images), "images": [{"path": str(i), "bytes": i.stat().st_size} for i in images]}
+    src["network"] = {"present": bool(captures),
+                      "captures": [{"path": str(c), "bytes": c.stat().st_size} for c in captures]}
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(src, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def load_inventory(case: Path, manifest: Path) -> dict:
@@ -1237,13 +1271,13 @@ def write_summary(ctx: Context, results: list[dict], integrity: dict | None = No
     counts = defaultdict(int)
     for r in results:
         counts[r["status"]] += 1
-    summary = {"case": str(ctx.case), "collection_root": str(ctx.root), "generated_at": utcnow(),
+    summary = {"case": str(ctx.case), "collection_root": str(ctx.root) if ctx.root else None, "generated_at": utcnow(),
                "counts": dict(counts), "integrity_after_parsing": integrity, "jobs": results}
     (ctx.out / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
 
     icon = {"ok": "✅", "partial": "⚠️", "warning": "⚠️", "empty": "⚠️", "failed": "❌", "timeout": "❌", "tool_missing": "✗",
             "no_input": "—", "dry_run": "·"}
-    md = ["# Collection parsing", "", f"- Collection: `{ctx.root}`", f"- Generated: {summary['generated_at']}",
+    md = ["# Collection parsing", "", f"- Collection: `{ctx.root}`" if ctx.root else "- Collection: none (memory image / captures only)", f"- Generated: {summary['generated_at']}",
           "- " + ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))]
     if integrity:
         ch = integrity["changed_during_parsing"]
@@ -1300,6 +1334,7 @@ def main(argv=None):
     if missing_cap:
         raise SystemExit(f"Network capture not found: {', '.join(missing_cap)}")
     ctx = Context(args.case, inventory, manifest, out, images, captures)
+    update_sources(args.case, images, captures, inventory)
     if images:
         print(f"Memory image: {images[0]} ({images[0].stat().st_size / 1e9:.1f} GB)")
     if captures:
@@ -1325,7 +1360,7 @@ def main(argv=None):
         return 0
 
     results = []
-    print(f"Collection: {ctx.root}\nOutputs   : {out}\n")
+    print(f"Collection: {ctx.root or 'none (memory image / captures only)'}\nOutputs   : {out}\n")
     if not args.dry_run:
         n = protect_collection(ctx)
         if n:

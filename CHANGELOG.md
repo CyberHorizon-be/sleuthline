@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+1.1, design in `docs/design/v1.1.md`. To be released as 1.1.0 after the three Case 001 runs (memory only, network only, full case) on the test VM.
+
+- **Sources of a case.** The inventory detects the disk collection, the memory image and the network captures in any combination and writes `inventory\sources.json` (stored in the database `meta`). A case without KAPE collection no longer needs an empty `C` folder. The collection is found at the root of the case, in `raw\`, in `kape\` or in the single sub-folder that holds a `*_CopyLog.csv` (several: stop).
+- **Steps that require a source.** A playbook step can declare `Requires: memory` / `network` / `disk`; without the source, the step is recorded `not_applicable` without any model call. Only steps 4 (memory) and 5 (network) declare it: on the 1.0 runs, every other step found findings with any single source. The agent is told the sources of the case at the start.
+- **Coverage** table, computed by the program: `not_collected` / `not_covered` / `not_parsed` / `empty` / `analyzed` for every kind of artifact; new agent tool `coverage()`; playbook rule ("not found" only for an analyzed artifact); report appendix E bis.
+- **Conservation** table: file → raw table (independent record count = rows loaded + rejected), tool → output (Volatility rows written, Suricata EVE events), raw table → timeline (dates present but none understood = failure). Summary in `normalize_report.md` and in the report.
+- **Timestamp provenance**: new timeline columns `ts_original`, `ts_conversion`, `ts_tz_detail`, `ts_confidence`, `clock_offset_s` (reserved). `ts` is unchanged.
+- Fixes from the 1.0 tests: parse summary shows the elapsed time of a job (`cpu_s` = sum of its steps); Volatility warnings make the job `warning`; Suricata gets an empty `threshold.config` when the MSI has none, and the rules it rejects are listed (e.g. `file.magic`); the report takes the host name from the memory image when no disk artifact gives one.
+- README: positioning ("a DFIR evidence platform with an AI investigation layer"), new tables and columns, known limitations updated.
+- Tests: 57 tests.
+
 ## 1.0.0 (2026-10-25)
 
 First stable release: KAPE collection, memory image and network captures analyzed together, from the collection to an evidence-backed report.

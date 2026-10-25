@@ -229,6 +229,41 @@ def integrity_text(raw) -> str:
 # ------------------------------------------------------------------------------------------
 # Report
 # ------------------------------------------------------------------------------------------
+def case_sources_line(db) -> str:
+    try:
+        from analyze import sources_line
+        return sources_line(db.sources())
+    except Exception:
+        return "?"
+
+
+def conservation_text(db) -> str | None:
+    """'all 412 checks ok (no record lost between the tools and the database)' or the failures."""
+    if not db.has_table("conservation"):
+        return None
+    cnt = dict(db.run("SELECT status, count(*) FROM conservation GROUP BY 1", max_rows=10)[1])
+    if not cnt.get("fail") and not cnt.get("warn"):
+        return f"all {cnt.get('ok', 0)} checks ok (no record lost between the tools and the database)"
+    bad = db.run("SELECT src_file, \"check\", expected, actual, note FROM conservation WHERE status = 'fail' "
+                 "ORDER BY 1 LIMIT 10", max_rows=10)[1]
+    txt = f"{cnt.get('ok', 0)} checks ok, {cnt.get('warn', 0)} warning(s), {cnt.get('fail', 0)} failure(s)"
+    if bad:
+        txt += ": " + "; ".join(f"{a} ({b}: expected {c}, got {d_}{', ' + e if e else ''})" for a, b, c, d_, e in bad)
+    return txt
+
+
+def memory_host(db) -> str | None:
+    """Host name from the memory image (COMPUTERNAME of the processes), when no disk artifact gives one."""
+    if "vol_envars" not in getattr(db, "raw_tables", set()):
+        return None
+    try:
+        rows = db.run("SELECT \"Value\", count(*) FROM raw.vol_envars WHERE \"Variable\" = 'COMPUTERNAME' "
+                      "AND \"Value\" IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 1", max_rows=1)[1]
+    except Exception:
+        return None
+    return f"{rows[0][0]} (memory image)" if rows else None
+
+
 def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list, pcfg: dict, log) -> Path:
     doc = Document()
     st = doc.styles["Normal"]
@@ -252,7 +287,7 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         by_sev[f["severity"]] += 1
     events = sorted(d["timeline_events"], key=lambda e: e.get("ts") or "")
     gen = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    main_host = hosts[0][0] if hosts else "?"
+    main_host = hosts[0][0] if hosts else memory_host(db) or "?"
     period = guidance.get("period") or {}
 
     # ---- Cover page --------------------------------------------------------------------
@@ -308,13 +343,15 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     # ---- 2. Scope and method -------------------------------------------------------------
     doc.add_heading("2. Scope, sources and methodology", level=1)
     doc.add_heading("2.1 Analyzed system", level=2)
-    kv_table(doc, [("Observed host names", ", ".join(f"{h} ({n})" for h, n in hosts) or "?"),
+    kv_table(doc, [("Evidence of the case", case_sources_line(db)),
+                   ("Observed host names", ", ".join(f"{h} ({n})" for h, n in hosts) or (memory_host(db) or "?")),
                    ("Observed accounts", ", ".join(f"{u} ({n})" for u, n in users) or "?"),
                    ("Machine time zone", f"ActiveTimeBias = {meta.get('machine_active_time_bias_min')} min (UTC = local time + bias)"),
                    ("Time convention of the report", "All times are UTC."),
                    ("Available traces", f"{tl_span[0]:,} timeline events, from {tl_span[1]} to {tl_span[2]}")])
     doc.add_heading("2.2 Collection and processing", level=2)
-    para(doc, "KAPE collection (!SANS_Triage target); parsing by recognized tools orchestrated by orchestrator.py; normalization "
+    para(doc, "Evidence of the case: KAPE collection (disk), memory image (Volatility 3) and network captures (Suricata), "
+              "as available (see 2.1); parsing by recognized tools orchestrated by orchestrator.py; normalization "
               "into DuckDB by normalize.py; analysis by analyze.py following the playbook. The raw tool outputs are kept in "
               f"{case}\\parsed and every cited piece of evidence points to them.")
     jobs = db.run("SELECT dir, title, status, tools, duration_s FROM jobs ORDER BY dir", max_rows=200)[1]
@@ -367,6 +404,18 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     if d.get("injection_alerts"):
         bullet(doc, f"{len(d['injection_alerts'])} excerpt(s) of the evidence look like instructions addressed to an AI: "
                     "see the appendix \"Text addressed to an AI found in the evidence\".")
+    na = [(s, v) for s, v in sorted(d["steps"].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999)
+          if v.get("status") == "not_applicable"]
+    for s, v in na:
+        bullet(doc, f"Step {s} ({v.get('title')}) not applicable: {v.get('reason')}.")
+    cov_counts = dict(db.run("SELECT status, count(*) FROM coverage GROUP BY 1", max_rows=10)[1]) if db.has_table("coverage") else {}
+    if cov_counts:
+        bullet(doc, "Coverage of the evidence (appendix E bis): " + ", ".join(f"{k} {v}" for k, v in sorted(cov_counts.items()))
+                    + ". An artifact that is not \"analyzed\" was not available to the analysis: its absence of findings "
+                      "is not evidence of absence.")
+    cons = conservation_text(db)
+    if cons and "failure" in cons and not cons.startswith("all"):
+        bullet(doc, f"Data conservation: {cons}.")
     gaps =[(s, v) for s, v in sorted(d["steps"].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999) if v.get("gaps")]
     for s, v in gaps:
         bullet(doc, f"Step {s} ({v.get('title')}): {v['gaps']}")
@@ -527,6 +576,20 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     add_table(doc, ["Artifact", "Tool", "Mapping", "Events", "First (UTC)", "Last (UTC)"],
               [[str(x) if x is not None else "" for x in r] for r in cov], widths=[5, 2.5, 2, 1.8, 3, 3], font=7)
 
+    if db.has_table("coverage"):
+        doc.add_heading("Appendix E bis: Coverage of the evidence", level=1)
+        para(doc, "Computed by the program from the inventory, the parsing jobs and the loaded tables. not_collected: absent "
+                  "from the case; not_covered: no installed tool; not_parsed: the tool failed or did not run; empty: parsed, "
+                  "no record; analyzed: records in the database.", size=9)
+        cnt = db.run("SELECT source, status, count(*), sum(rows) FROM coverage GROUP BY ALL ORDER BY 1, 2", max_rows=50)[1]
+        add_table(doc, ["Source", "Status", "Artifacts", "Records"], [[a, b, str(c), str(n or 0)] for a, b, c, n in cnt],
+                  widths=[3, 3, 2.5, 3])
+        rows = db.run("SELECT artifact, source, status, tool, detail FROM coverage WHERE status <> 'analyzed' "
+                      "ORDER BY source, status, artifact", max_rows=300)[1]
+        if rows:
+            add_table(doc, ["Artifact", "Source", "Status", "Tool", "Detail"],
+                      [[str(x) if x is not None else "" for x in r] for r in rows], widths=[5.5, 1.6, 2.2, 2.5, 5.2], font=7)
+
     doc.add_heading("Appendix F: Traceability", level=1)
     dbp = case / "db" / "case.duckdb"
     usage = d.get("usage", {})
@@ -535,6 +598,7 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
                    ("Pipeline version", str(meta.get("pipeline_version") or "unknown")),
                    ("Collection integrity", integrity_text(meta.get("collection_integrity"))),
                    ("Normalization mappings", f"v{meta.get('map_version')} sha256 {meta.get('map_sha256')}"),
+                   ("Data conservation", conservation_text(db) or "not checked (database normalized before 1.1)"),
                    ("Model", f"{pcfg.get('provider')} / {pcfg.get('model')}"),
                    ("Agent runs", "\n".join(f"{r.get('started')} → {r.get('ended')}: {r.get('provider')}/{r.get('model')}, "
                                             f"playbook sha256 {str(r.get('playbook_sha256'))[:16]}…" for r in runs) or "?"),

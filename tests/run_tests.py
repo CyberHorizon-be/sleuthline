@@ -1140,6 +1140,187 @@ def regression(case: Path, update: bool) -> int:
     return 1 if diffs else 0
 
 
+# ------------------------------------------------------------------------------------------
+# 1.1: sources of a case, step requirements, coverage, conservation, timestamp provenance
+# ------------------------------------------------------------------------------------------
+class TestSources(unittest.TestCase):
+    @staticmethod
+    def kape(folder: Path):
+        (folder / "C" / "Windows").mkdir(parents=True)
+        (folder / "C" / "Windows" / "a.txt").write_text("x")
+        (folder / "2023-11-10T123304_CopyLog.csv").write_text("DestinationFile\n", encoding="utf-8")
+
+    def test_collection_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            case.mkdir()
+            self.assertIsNone(inventory.find_collection_root(case))
+            for sub in ("raw", "kape", "collection_x"):
+                c = Path(d) / sub / "case"
+                self.kape(c / sub)
+                self.assertEqual(inventory.find_collection_root(c), c / sub, sub)
+            c = Path(d) / "root" / "case"
+            self.kape(c)
+            self.assertEqual(inventory.find_collection_root(c), c)
+            c = Path(d) / "two" / "case"
+            self.kape(c / "first")
+            self.kape(c / "second")
+            with self.assertRaises(SystemExit):
+                inventory.find_collection_root(c)
+            c = Path(d) / "reserved" / "case"            # a CopyLog in memory\ or pcap\ is not a collection
+            (c / "memory").mkdir(parents=True)
+            (c / "memory" / "x_CopyLog.csv").write_text("DestinationFile\n")
+            self.assertIsNone(inventory.find_collection_root(c))
+
+    def test_inventory_memory_only_and_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            (case / "memory").mkdir(parents=True)
+            (case / "memory" / "host.mem").write_bytes(b"x" * 10)
+            inventory.main([str(case), "--manifest", str(Path(d) / "none.json"), "--registry", str(Path(d) / "none.json")])
+            src = json.loads((case / "inventory" / "sources.json").read_text(encoding="utf-8"))
+            self.assertFalse(src["disk"]["present"])
+            self.assertTrue(src["memory"]["present"])
+            self.assertFalse(src["network"]["present"])
+            self.assertEqual(analyze.sources_line(src),
+                             "Sources in this case: memory image (host.mem). No disk collection, no network capture.")
+            # the empty "C" folder used with 1.0 is no collection
+            (case / "C").mkdir()
+            inventory.main([str(case), "--manifest", str(Path(d) / "none.json"), "--registry", str(Path(d) / "none.json")])
+            src = json.loads((case / "inventory" / "sources.json").read_text(encoding="utf-8"))
+            self.assertFalse(src["disk"]["present"])
+            empty = Path(d) / "empty"
+            empty.mkdir()
+            with self.assertRaises(SystemExit):
+                inventory.main([str(empty)])
+
+    def test_step_requirements(self):
+        _, steps = analyze.parse_playbook(PIPE / "config" / "PLAYBOOK.md")
+        self.assertEqual({s["num"]: s["requires"] for s in steps if s["requires"]}, {4: {"memory"}, 5: {"network"}})
+        self.assertFalse(any(s["body"].lower().startswith("requires") for s in steps))
+
+        def skipped(disk, mem, net):
+            src = {"disk": {"present": disk}, "memory": {"present": mem}, "network": {"present": net}}
+            return [s["num"] for s in steps if not analyze.step_applicable(s, src)[0]]
+        self.assertEqual(skipped(False, True, False), [5])          # memory only: only the network step
+        self.assertEqual(skipped(False, False, True), [4])          # capture only: only the memory step
+        self.assertEqual(skipped(True, False, False), [4, 5])
+        self.assertEqual(skipped(True, True, True), [])
+        # a general step is never skipped, whatever the sources
+        general = [s for s in steps if not s["requires"]]
+        self.assertTrue(all(analyze.step_applicable(s, {})[0] for s in general))
+        self.assertEqual(analyze.parse_requires("Requires: memory | network\nbody")[0], {"memory", "network"})
+        self.assertEqual(analyze.parse_requires("Requires: any\nbody")[0], None)
+        with self.assertRaises(SystemExit):
+            analyze.parse_requires("Requires: ram\nbody")
+
+    def test_step_not_applicable_without_model_call(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)            # disk only (no vol_* / suricata_* table)
+            script = [{"tool_calls": [{"name": "step_complete", "args": {"summary": "done"}}]}]
+            (Path(d) / "script.json").write_text(json.dumps(script), encoding="utf-8")
+            cfg = {"active": "mock", "profiles": {"mock": {"provider": "mock", "model": "mock", "script": str(Path(d) / "script.json")}}}
+            (Path(d) / "cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
+            pb = Path(d) / "PLAYBOOK.md"
+            pb.write_text("# P\n\n## Rules\n\n1. Facts.\n\n## Step 1: Context\n\nLook.\n\n"
+                          "## Step 2: Memory (RAM)\nRequires: memory\n\nVolatility.\n", encoding="utf-8")
+            self.assertEqual(analyze.main([str(case), "--config", str(Path(d) / "cfg.json"), "--playbook", str(pb)]), 0)
+            st = json.loads((case / "analysis" / "findings.json").read_text(encoding="utf-8"))
+            self.assertEqual(st["steps"]["1"]["status"], analyze.DONE)
+            self.assertEqual(st["steps"]["2"]["status"], analyze.NOT_APPLICABLE)
+            self.assertEqual(st["steps"]["2"]["reason"], "no memory image in this case")
+            self.assertEqual(st["usage"]["calls"], 1)                  # one model call: step 1 only
+            tr = [json.loads(l) for l in (case / "analysis" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertFalse([r for r in tr if str(r.get("step")) == "2"])
+
+
+class TestCoverageConservationTimestamps(unittest.TestCase):
+    def test_memory_case(self):
+        """Volatility job + normalization of a memory-only case: coverage, conservation, timestamp provenance."""
+        with tempfile.TemporaryDirectory() as d:
+            case, image, ctx = build_memory_case(Path(d))
+            job = next(j for j in orchestrator.JOBS if j.id == "volatility")
+            rec = orchestrator.run_job(job, ctx, force=True, dry_run=False)
+            self.assertIn("memory_image", rec["artifacts"])
+            self.assertLessEqual(rec["duration_s"], rec["cpu_s"] + 1)
+            orchestrator.write_summary(ctx, [rec])
+            orchestrator.update_sources(case, [image], [], {"summary": {"collection_root": None, "files_total": 0}})
+            self.assertEqual(normalize.main([str(case), "--no-live"]), 0)
+            con = duckdb.connect(str(case / "db" / "case.duckdb"), read_only=True)
+            src = json.loads(con.execute("SELECT value FROM meta WHERE key = 'sources'").fetchone()[0])
+            self.assertTrue(src["memory"]["present"])
+            cov = {r[0]: r[2] for r in con.execute("SELECT artifact, source, status FROM coverage").fetchall()}
+            self.assertEqual(cov["Disk collection (KAPE)"], "not_collected")
+            self.assertEqual(cov["Network captures"], "not_collected")
+            self.assertEqual(cov["Memory image: vol_pstree"], "analyzed")
+            self.assertEqual(cov["Memory image: vol_userassist"], "empty")
+            bad = con.execute("SELECT * FROM conservation WHERE status <> 'ok'").fetchall()
+            self.assertEqual(bad, [])
+            checks = {r[0] for r in con.execute('SELECT DISTINCT "check" FROM conservation').fetchall()}
+            self.assertEqual(checks, {"file_to_raw", "tool_to_output", "raw_to_timeline"})
+            n_vol = con.execute("SELECT count(*) FROM conservation WHERE \"check\" = 'tool_to_output'").fetchone()[0]
+            self.assertEqual(n_vol, len(memory.PLUGINS))
+            row = con.execute("SELECT ts, ts_original, ts_conversion, ts_confidence, clock_offset_s FROM timeline "
+                              "WHERE artifact = 'Memory: network connections (netscan)'").fetchone()
+            self.assertEqual(str(row[0]), "2023-11-10 11:03:10")
+            self.assertEqual(row[1], "2023-11-10T11:03:10+00:00")
+            self.assertEqual((row[2], row[3], row[4]), ("utc", "high", None))
+            con.close()
+
+    def test_conservation_detects_a_loss_and_offsets(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            (case / "parsed" / "suricata" / "cap.pcap" / "raw").mkdir(parents=True)
+            cap = case / "parsed" / "suricata" / "cap.pcap"
+            # same events, written by a Suricata running in UTC+2 (as on the test VM)
+            lines = [json.loads(l.replace("+0000", "+0200")) for l in EVE_SAMPLE.strip().splitlines()]
+            (cap / "raw" / "eve.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+            network.split_eve(cap / "raw" / "eve.jsonl", cap, "cap.pcap")
+            # one EVE line lost by the split (e.g. a tool bug): the conservation check must see it
+            first = next(cap.glob("eve_flow.jsonl"))
+            kept = first.read_text(encoding="utf-8").splitlines()
+            first.write_text("\n".join(kept[1:]) + ("\n" if kept[1:] else ""), encoding="utf-8")
+            self.assertEqual(normalize.main([str(case), "--no-live"]), 0)
+            con = duckdb.connect(str(case / "db" / "case.duckdb"), read_only=True)
+            fail = con.execute("SELECT src_file, expected - actual FROM conservation WHERE status = 'fail'").fetchall()
+            self.assertIn(("suricata/cap.pcap/raw/eve.jsonl", 1), fail)
+            conv = {r[0] for r in con.execute("SELECT DISTINCT ts_conversion FROM timeline WHERE tool = 'Suricata'").fetchall()}
+            self.assertEqual(conv, {"offset"})
+            det = con.execute("SELECT ts_tz_detail FROM timeline WHERE tool = 'Suricata' LIMIT 1").fetchone()[0]
+            self.assertTrue(det.startswith("explicit offset +"), det)
+            con.close()
+
+    def test_report_helpers(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            db = analyze.CaseDB(case / "db" / "case.duckdb", analyze.DEFAULT_LIMITS)
+            import report_docx
+            self.assertIsNone(report_docx.memory_host(db))
+            self.assertIsNone(report_docx.conservation_text(db))       # database older than 1.1
+            self.assertTrue(report_docx.case_sources_line(db).startswith("Sources in this case: disk collection"))
+            self.assertIn("No memory image", report_docx.case_sources_line(db))
+
+    def test_suricata_threshold_and_rules(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "suricata.yaml").write_text(MINI_SURICATA_YAML, encoding="utf-8")
+            (d / "install").mkdir()
+            (d / "out").mkdir()
+            network.write_config(d / "suricata.yaml", d / "out" / "_suricata.yaml", None, d / "install")
+            import yaml
+            cfg = yaml.safe_load((d / "out" / "_suricata.yaml").read_text(encoding="utf-8").split("---", 1)[1])
+            self.assertEqual(Path(cfg["threshold-file"]), d / "out" / "threshold.config")
+            self.assertTrue((d / "out" / "threshold.config").is_file())
+            log = d / "suricata.log"
+            log.write_text("Error: detect-parse: unknown rule keyword 'file.magic'.\n"
+                           "Info: detect: 1 rule files processed. 52825 rules successfully loaded, 9 rules failed, 0 rules skipped\n",
+                           encoding="utf-8")
+            self.assertEqual(network.rules_summary(log).strip(),
+                             "Rules: 52825 loaded, 9 failed (keywords not supported by this Suricata build: file.magic)")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--regression", type=Path, action="append", help="real case to normalize and compare with tests\\golden")
