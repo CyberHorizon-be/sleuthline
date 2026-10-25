@@ -35,6 +35,8 @@ Network captures ──────────────────> 2. pars
 
 **Network tested on** the same case, with the network capture only (`case001.pcap`, 198 MB, 411,797 packets), in a blind run without guidance: parsing 12 s (Suricata 8.0.7, 52,825 ET Open rules, 461 alerts), normalization under 1 min, analysis 62 min, **about 6 USD** of Claude Opus 5.5 API usage. From the network alone, the agent found the RDP brute force of the domain Administrator from `194.61.24.102` (95 failed attempts in 21 s, then success), the download of `coreupdater.exe` by the domain controller and the workstation (with its hashes), the Meterpreter C2 to `203.78.103.109:443` on both hosts, the RDP pivot from the DC to the workstation, and the C2 restarting at each logon (persistence) (see [Network captures](#network-captures-suricata)). **The generated report:** [PDF](docs/examples/report_dfirmadness_case001_network.pdf) · [Word](docs/examples/report_dfirmadness_case001_network.docx).
 
+**Full case tested on** the same workstation with the three sources together: KAPE `!SANS_Triage` collection of the disk image (`DESKTOP-E01`, 2,703 files, integrity INTACT), the memory image and the network capture, in a blind run without guidance. Parsing 25 min, normalization 1 min (847,322 timeline rows, 2,218 detections), analysis 31 min (14 steps, 237 model calls), **11.76 USD** of Claude Opus 5.5 API usage (amount billed, Claude Console; it includes a first attempt stopped by a network error, fixed in 1.0). **17 critical / high findings confirmed by independent sources** (none with the memory image or the capture alone), for instance the same `coreupdater.exe` SHA-256 on the wire (Suricata) and on the disk (Amcache). The agent reconstructed the whole intrusion (RDP brute force of the DC, RDP pivot to the workstation, Defender disabled, Meterpreter, `getsystem`, migration into `spoolsv.exe`, two persistence mechanisms, mortysmith's files zipped as `loot.zip` then deleted), and found by itself that the capture clock is one hour behind the host clock, with the cause in the Security log (4616: clock moved forward one hour right after the domain join). **The generated report:** [PDF](docs/examples/report_dfirmadness_case001_full.pdf) · [Word](docs/examples/report_dfirmadness_case001_full.docx).
+
 > Sleuthline assists an analyst; it is not an automated expert. The report must be reviewed and validated by a qualified analyst before any distribution or decision (see [Limitations and responsibility](#limitations-and-responsibility)).
 
 ## Requirements
@@ -124,13 +126,25 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test03   # 6
 
 Details and results: **[Network captures (Suricata)](#network-captures-suricata)**.
 
+**With the three sources (full case).** As run on the same workstation, 1.0: the disk image `DESKTOP-E01` (4 segments) mounted read-only with Arsenal Image Mounter (Windows partition as `F:`), then a KAPE collection with the KAPE GUI, into a `kape` folder renamed `raw` (the collection must be at the root of the case or in `raw\`); the memory image and the capture copied from the two previous cases:
+
+```powershell
+#   KAPE (GUI): --tsource F: --tdest C:\Sleuthline\cases\test04\kape --tflush --target !SANS_Triage
+Rename-Item C:\Sleuthline\cases\test04\kape raw
+#   C:\Sleuthline\cases\test04\  ->  raw\ (CopyLog + F\), memory\DESKTOP-SDN1RPT.mem, pcap\case001.pcap
+C:\Sleuthline\pipeline\sleuthline.ps1 inventory C:\Sleuthline\cases\test04   # INTACT, 2,703 files
+C:\Sleuthline\pipeline\sleuthline.ps1 parse     C:\Sleuthline\cases\test04   # 25 minutes: disk tools, Volatility, Suricata
+C:\Sleuthline\pipeline\sleuthline.ps1 normalize C:\Sleuthline\cases\test04   # about 1 minute
+C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test04   # 31 minutes, 11.76 USD, no guidance
+```
+
 ## Repository layout
 
 ```
 <repository>\                       ← source of truth (e.g. C:\Sleuthline-setup)
 ├── Install-All.ps1                  ← ENTRY POINT: installs everything
 ├── LICENSE, README.md, CHANGELOG.md
-├── docs\examples\                 ← reports generated on Threat Hunting Lab 1 and on DFIR Madness Case 001 (memory, network) (PDF and Word)
+├── docs\examples\                 ← reports generated on Threat Hunting Lab 1 and on DFIR Madness Case 001 (memory, network, full case) (PDF and Word)
 ├── install\                         ← VM installation
 │   ├── 01_Prepare-VM.ps1                Python, .NET, 7-Zip, Git, folder tree, venv
 │   ├── 02_Install-Tools.ps1             parsing tools + deployment of the pipeline
@@ -574,6 +588,17 @@ C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\ru
 ```
 
 The fast tests (about ten seconds) cover the SQL safeguards of the agent, the evidence policy (independent sources, automatic mappings, answers without evidence), the untrusted-evidence blocks and injection detection, the guidance, step replay, DuckDB macros, hash extraction, inventory and integrity, the internal parsers, the payload sent to Claude, and an end-to-end analysis with the `mock` provider. `--regression` (optional) normalizes one of your own cases into a temporary database and compares the row count per artifact with a reference: the first run records it in `tests\golden\<case>.json` (local, ignored by git), later runs detect any parser or mapping change that adds or loses rows (`--update-golden` after an intended change).
+
+## Known limitations of 1.0
+
+Found during the tests, planned for the next versions:
+
+- **A case without KAPE collection** (memory image or captures only) needs an empty folder `C` in the case, and the collection must be at the root of the case or in `raw\` (a folder named `kape` is not found).
+- **Steps without data still run**: with a memory image or a capture only, the disk steps of the playbook still call the model (cost and time for nothing).
+- **One host per case.** Local-time sources are converted with the time zone of the case's host; clock offsets between sources (e.g. capture vs host, one hour on Case 001) are found by the agent, not computed by the program.
+- **Validation**: tested on two public cases (four runs). The installation was tested on the test VM: clean installation from GitHub with `Install-All.ps1`, then Volatility 3, Suricata and Npcap with `02_Install-Tools.ps1`.
+- **Suricata (Windows build)**: 9 recent ET Open rules are rejected (`file.magic`), and `threshold.config` is missing (warning only).
+- **Reports and summaries**: without a KAPE collection the report shows `?` as main system; the parse summary shows the sum of the Volatility plugin durations, not the elapsed time; Volatility warnings (registry keys incomplete in memory) are not shown in the job status.
 
 ## Known issues
 
