@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 (2026-10-25)
 
+First stable release: KAPE collection, memory image and network captures analyzed together, from the collection to an evidence-backed report.
+
+- **Tested on the full DFIR Madness Case 001** (KAPE collection of the disk image + memory image + network capture, blind run): parsing 25 minutes, analysis 31 minutes, 11.76 USD. 17 critical / high findings confirmed by independent sources (none with memory or network alone). README: the full case, its commands and its report; new section *Known limitations of 1.0*.
 - **Fix: analysis stopped by a transient network error.** A TLS error while reading the model's answer (`ssl.SSLError: bad record mac`, seen on the full KAPE + memory + PCAP case) was not retried and ended the analysis. Every network error (TLS, connection reset, timeout, truncated answer) is now retried like HTTP 429 / 5xx, with the same back-off. The state was saved: `analyze` continues from the interrupted step.
 - Tests: 49 tests, including the retry of a TLS error and of a connection reset.
 
