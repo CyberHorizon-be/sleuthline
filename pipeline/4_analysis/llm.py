@@ -84,7 +84,15 @@ def _http_json(url: str, payload: dict, headers: dict, timeout: int, retries: in
                                      headers={"content-type": "application/json", **headers})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                body = resp.read()
+            try:
+                return json.loads(body.decode("utf-8"))
+            except ValueError as e:
+                # 200 with a body that is not JSON (truncated answer, HTML page of a proxy): retried like a network error
+                last = f"invalid JSON answer: {e}: {body[:300]!r}"
+                time.sleep(delay)
+                delay = min(delay * 2, 120)
+                continue
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:2000]
             last = f"HTTP {e.code}: {body}"

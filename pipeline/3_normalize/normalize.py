@@ -476,26 +476,57 @@ class Normalizer:
         self.rates = self.history.rates()
         self.tl_units = 0
 
+    @staticmethod
+    def dword_signed(raw) -> int | None:
+        """REG_DWORD value as a signed 32-bit integer: east of UTC the bias is negative and RECmd may show it
+        unsigned (Belgium in winter: -60 = 0xFFFFFFC4 = 4294967236). Decimal or 0x hexadecimal."""
+        v = str(raw if raw is not None else "").strip()
+        try:
+            n = int(v, 16) if re.fullmatch(r"(?i)0x[0-9a-f]+", v) else int(v) if re.fullmatch(r"-?\d+", v) else None
+        except ValueError:
+            return None
+        if n is None or not -(2 ** 31) <= n < 2 ** 32:
+            return None
+        return n - 2 ** 32 if n >= 2 ** 31 else n
+
     def detect_tz_bias(self, con):
         """Time zone bias of the analyzed machine (UTC = local + bias, in minutes), read from the SYSTEM
-        hive (TimeZoneInformation\\ActiveTimeBias). Used for sources flagged local_time."""
-        queries = []
-        if "registry_kroll" in self.tables:
-            queries.append("SELECT ValueData FROM raw.registry_kroll WHERE KeyPath ILIKE '%\\TimeZoneInformation' "
-                           "AND ValueName = 'ActiveTimeBias' LIMIT 1")
-        if "reg_timezoneinfo" in self.tables:
-            queries.append("SELECT ValueData FROM raw.reg_timezoneinfo WHERE ValueName = 'ActiveTimeBias' LIMIT 1")
-        for sql in queries:
+        hive (TimeZoneInformation\\ActiveTimeBias) of the current control set (Select\\Current; otherwise the
+        lowest ControlSet00N). Used for sources flagged local_time."""
+        for table in ("registry_kroll", "reg_timezoneinfo"):
+            if table not in self.tables:
+                continue
             try:
-                r = con.execute(sql).fetchone()
-                if r and r[0] is not None and re.fullmatch(r"-?\d+", str(r[0]).strip()):
-                    self.tz_bias = int(str(r[0]).strip())
-                    self.report["warnings"].append(
-                        f"Local time -> UTC: ActiveTimeBias = {self.tz_bias} min (value at collection time; "
-                        f"a daylight saving change during the period is not taken into account).")
-                    return
+                rows = con.execute(f"SELECT KeyPath, ValueData FROM raw.{table} WHERE KeyPath ILIKE '%\\TimeZoneInformation' "
+                                   "AND ValueName = 'ActiveTimeBias'").fetchall()
             except duckdb.Error:
                 continue
+            cands = []
+            for key, val in rows:
+                bias = self.dword_signed(val)
+                if bias is None or not -24 * 60 <= bias <= 24 * 60:
+                    continue
+                m = re.search(r"(?i)ControlSet(\d{3})", str(key or ""))
+                cands.append((int(m.group(1)) if m else 999, bias, str(key)))
+            if not cands:
+                continue
+            current = None
+            try:
+                r = con.execute(f"SELECT ValueData FROM raw.{table} WHERE KeyPath ILIKE '%Select' AND ValueName = 'Current' "
+                                "LIMIT 1").fetchone()
+                current = self.dword_signed(r[0]) if r else None
+            except duckdb.Error:
+                pass
+            chosen = next((c for c in cands if c[0] == current), None) or min(cands)
+            self.tz_bias = chosen[1]
+            how = (f"ControlSet{chosen[0]:03d} (current control set)" if chosen[0] == current
+                   else f"{chosen[2]} (current control set unknown: lowest ControlSet)" if chosen[0] != 999 else chosen[2])
+            others = sorted({c[1] for c in cands} - {chosen[1]})
+            self.report["warnings"].append(
+                f"Local time -> UTC: ActiveTimeBias = {self.tz_bias} min, from {how} (value at collection time; "
+                f"a daylight saving change during the period is not taken into account)."
+                + (f" Other control sets hold a different bias ({', '.join(map(str, others))} min): check." if others else ""))
+            return
 
     @staticmethod
     def detect_case_root(case: Path) -> str:
