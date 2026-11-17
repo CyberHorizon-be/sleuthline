@@ -33,7 +33,7 @@ import duckdb
 VERSION = "1.0"
 NETWORK_UNIT = "network"           # host id of the case-level captures (<case>\pcap\)
 HOST_RX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
-COMMON = ["timeline", "detections", "hash_hits", "sources", "jobs", "coverage", "conservation"]
+COMMON = ["timeline", "detections", "hash_hits", "sources", "jobs", "coverage", "conservation"]   # entities: rebuilt
 
 
 def q(ident: str) -> str:
@@ -210,6 +210,10 @@ class Merger:
             con.execute("""CREATE VIEW artifact_summary AS
                 SELECT host_id, artifact, category, tool, mapping, count(*) AS rows, min(ts) AS first_ts, max(ts) AS last_ts
                 FROM timeline GROUP BY ALL ORDER BY rows DESC""")
+            # Entity graph of the whole case (2.0a): one entity for the same file / hash / IP on every host
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import entities
+            entities.build(con, multi=True, log=self.log)
             # Conservation of the merge
             rows = []
             for u, t, n_in, n_out in checks:

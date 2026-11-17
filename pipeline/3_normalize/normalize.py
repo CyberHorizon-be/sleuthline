@@ -50,7 +50,7 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("duckdb is not installed in this Python environment (pip install duckdb).")
 
-VERSION = "1.1"
+VERSION = "1.2"
 HERE = Path(__file__).resolve().parent
 PIPE = Path(__file__).resolve().parents[1]      # <root>\pipeline (1_inventory, 2_parsing, 3_normalize, 4_analysis, config, docs, local)
 CONFIG_DIR = PIPE / "config"                       # validated files (source: <repository>\pipeline\config)
@@ -963,6 +963,18 @@ class Normalizer:
                  + (", ".join(f"{k}: {b} hash(es) found" for k, a, b in n) or "no match"))
 
     # -- metadata, report --------------------------------------------------------------
+    def build_entities(self, con):
+        """2.0a: entity graph (files, hashes, IPs, URLs, domains, accounts, SIDs, hosts -> records), entities.py."""
+        self.log("Building the entity graph")
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import entities
+            self.report["entities"] = entities.build(con, multi=False, log=self.log)
+        except duckdb.Error as e:
+            msg = str(e).splitlines()[0][:500]
+            self.report["warnings"].append(f"entity graph not built: {msg}")
+            self.log(f"  entities: ERROR {msg}")
+
     def write_sources(self, con):
         con.execute("""CREATE TABLE sources (src_file VARCHAR, job VARCHAR, bytes BIGINT, sha256 VARCHAR, status VARCHAR,
             reason VARCHAR, raw_table VARCHAR, rows BIGINT, rejected_rows BIGINT, mapping VARCHAR, source_id VARCHAR)""")
@@ -1350,6 +1362,7 @@ class Normalizer:
             self.log.set_remaining(tl_rows * r["final_s_per_row"] * 0.5)
             self.build_detections(con)
             self.build_hashsets(con)
+            self.build_entities(con)
             self.write_sources(con)
             meta = self.write_meta(con, started)
             self.build_coverage(con)

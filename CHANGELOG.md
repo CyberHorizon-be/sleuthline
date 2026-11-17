@@ -26,6 +26,13 @@
 - README: the EZTools bootstrap runs before the lock comparison (supply chain); daylight saving time not handled (one hour off in Europe for the other season).
 - Tests: 68 tests.
 
+## 2.0.0 (in progress)
+
+Design in `docs/design/v2.0.md` (decision graph, in three parts).
+
+- **2.0a, entity graph.** `normalize.py` (and `merge.py` for a multi-host case) builds `entities` and `entity_refs`: files (paths normalized without the drive or volume), file names of executables / scripts / archives, hashes, IPv4 addresses, URLs, domains, accounts, SIDs and hosts, linked to the records where they appear (timeline, detections, hash matches). Deterministic, no model call; same `entity_id` on every host; `common` entities flagged. New agent tools `pivot` and `neighbours` (results wrapped as untrusted evidence); playbook rule 6 uses them. Report: *Links between findings* (entities shared by several findings or several hosts).
+- Tests: 71 tests.
+
 ## 1.0.0 (2026-10-25)
 
 First stable release: KAPE collection, memory image and network captures analyzed together, from the collection to an evidence-backed report.

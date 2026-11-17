@@ -913,6 +913,11 @@ class TestNetwork(unittest.TestCase):
             sha = con.execute("SELECT sha256 FROM raw.pcap_files").fetchone()[0]
             self.assertEqual(sha, hashlib.sha256(cap.read_bytes()).hexdigest().upper())
             self.assertEqual(con.execute("SELECT count(*) FROM raw.suricata_eve_smb").fetchone()[0], 1)
+            # 2.0a: entity graph built by the normalization from the real Suricata events
+            ents = dict(con.execute("SELECT type, count(*) FROM entities GROUP BY 1").fetchall())
+            self.assertGreater(ents.get("ip", 0), 0, ents)
+            self.assertFalse(con.execute("SELECT count(*) FROM entity_refs r LEFT JOIN timeline_all t USING (ref) "
+                                         "WHERE t.ref IS NULL").fetchone()[0])          # every entity ref is a real record
             con.close()
         # Evidence policy: the captures are ONE source, distinct from the disk and the memory
         net = [{"ref": "suricata/lab.pcap/eve_http.jsonl#1", "artifact": "HTTP (Suricata)", "evidence": "lab.pcap"},
@@ -1347,6 +1352,101 @@ class TestAuditFixes(unittest.TestCase):
             self.assertEqual(llm._http_json("https://x/v1/messages", {}, {}, 10), {"ok": True})
         finally:
             urllib.request.urlopen, llm.time.sleep = old_open, old_sleep
+
+
+
+class TestEntityGraph(unittest.TestCase):
+    """2.0a: entity graph (entities.py), pivot / neighbours tools, links between findings in the report."""
+
+    def db_with_entities(self, d: Path, hosts=None) -> Path:
+        sys.path.insert(0, str(PIPE / "3_normalize"))
+        import entities
+        import merge
+        if hosts:
+            case = Path(d) / "case"
+            for h in hosts:
+                build_synthetic_case(case / "hosts" / h)
+            merge.Merger(case, log=lambda *a: None).run()
+            return case
+        case = Path(d) / "case"
+        build_synthetic_case(case)
+        con = duckdb.connect(str(case / "db" / "case.duckdb"))
+        con.execute("INSERT INTO timeline VALUES (300, TIMESTAMP '2023-11-10 11:03:30', 'flow', 'Network flows (Suricata)', "
+                    "'network', 'Suricata', NULL, NULL, '203.78.103.109', 'TCP 10.42.85.115:50875 -> 203.78.103.109:443 GET "
+                    "http://194.61.24.102/coreupdater.exe SHA256=10f3b92002bb98467334161cf85d0b1730851f9256f83c27db125e9a0c1cfda6 "
+                    "FTK v4.2.1.4', NULL, 'flow', 'suricata/f.jsonl', 1, NULL, 'validated', 'suricata/f.jsonl#1')")
+        entities.build(con, log=lambda *a: None)
+        con.close()
+        return case
+
+    def test_extraction_and_normalization(self):
+        sys.path.insert(0, str(PIPE / "3_normalize"))
+        import entities
+        con = duckdb.connect()
+        for p in (r"F:\Windows\System32\CoreUpdater.exe", r"\Device\HarddiskVolume3\Windows\System32\coreupdater.exe",
+                  r"%SystemRoot%\System32\coreupdater.exe", r"\\?\C:\Windows\System32\coreupdater.exe"):
+            self.assertEqual(entities.norm_path(p), r"\windows\system32\coreupdater.exe")
+            self.assertEqual(con.execute("SELECT " + entities._PATH_SQL.format(x="?"), [p]).fetchone()[0], entities.norm_path(p))
+        with tempfile.TemporaryDirectory() as d:
+            case = self.db_with_entities(d)
+            con = duckdb.connect(str(case / "db" / "case.duckdb"), read_only=True)
+            ents = {(t, n): (r, rec) for t, n, r, rec in con.execute("SELECT type, norm, refs, records FROM entities").fetchall()}
+            # the path of the Prefetch record and the path quoted in the 4688 event are one entity
+            self.assertEqual(ents[("file", r"\users\bob\evil.exe")][1], 2)
+            self.assertIn(("filename", "evil.exe"), ents)
+            self.assertIn(("hash", "10f3b92002bb98467334161cf85d0b1730851f9256f83c27db125e9a0c1cfda6"), ents)
+            self.assertIn(("ip", "203.78.103.109"), ents)
+            self.assertIn(("url", "http://194.61.24.102/coreupdater.exe"), ents)
+            self.assertNotIn(("ip", "4.2.1.4"), ents)                    # version number, not an address
+            self.assertIn(("account", "bob"), ents)
+            eid = con.execute("SELECT entity_id FROM entities WHERE type = 'filename' AND norm = 'evil.exe'").fetchone()[0]
+            self.assertRegex(eid, r"^E[0-9a-f]{12}$")
+            con.close()
+
+    def test_shared_across_hosts(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = self.db_with_entities(d, hosts=("PC1", "DC01"))
+            con = duckdb.connect(str(case / "db" / "case.duckdb"), read_only=True)
+            hosts, refs = con.execute("SELECT hosts, records FROM entities WHERE type = 'file' AND norm = ?",
+                                      [r"\users\bob\evil.exe"]).fetchone()
+            self.assertEqual((hosts, refs), ("DC01, PC1", 4))            # one entity, records on both hosts
+            self.assertEqual({r[0][:4] for r in con.execute("SELECT ref FROM entity_refs WHERE type = 'file'").fetchall()},
+                             {"PC1:", "DC01"})
+            con.close()
+
+    def test_pivot_neighbours_and_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = self.db_with_entities(d)
+            script = [{"tool_calls": [
+                {"name": "pivot", "args": {"value": "C:\\Users\\bob\\EVIL.EXE"}},
+                {"name": "pivot", "args": {"value": "evil.exe"}},
+                {"name": "pivot", "args": {"value": "nothing-like-this"}},
+                {"name": "neighbours", "args": {"value": "203.78.103.109", "window_s": 120}},
+                {"name": "add_finding", "args": {"title": "EVIL.EXE executed", "severity": "high", "confidence": "confirmed",
+                                                 "description": "x", "refs": ["prefetch/p.csv#1"]}},
+                {"name": "add_finding", "args": {"title": "EVIL.EXE in the process creation log", "severity": "medium",
+                                                 "confidence": "confirmed", "description": "x", "refs": ["evtx/e.csv#1"]}},
+                {"name": "step_complete", "args": {"summary": "done"}}]}]
+            (Path(d) / "script.json").write_text(json.dumps(script), encoding="utf-8")
+            cfg = {"active": "mock", "profiles": {"mock": {"provider": "mock", "model": "mock", "script": str(Path(d) / "script.json")}}}
+            (Path(d) / "cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
+            pb = Path(d) / "PLAYBOOK.md"
+            pb.write_text("# P\n\n## Rules\n\n1. Facts.\n\n## Step 1: Execution\n\nLook.\n", encoding="utf-8")
+            self.assertEqual(analyze.main([str(case), "--config", str(Path(d) / "cfg.json"), "--playbook", str(pb)]), 0)
+            tr = [json.loads(l) for l in (case / "analysis" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
+            res = [r["result"] for r in tr if r.get("kind") == "tool"]
+            self.assertTrue(res[0].startswith("<untrusted_evidence"))
+            self.assertIn("prefetch/p.csv#1", res[0])
+            self.assertIn("evtx/e.csv#1", res[0])
+            self.assertIn("Entities in the same records", res[0])
+            self.assertIn("evil.exe", res[1])
+            self.assertIn("No entity matches", res[2])
+            self.assertIn("prefetch/p.csv#1", res[3])                    # Prefetch of EVIL.EXE 21 s before the flow
+            import zipfile
+            with zipfile.ZipFile(next((case / "analysis").glob("report_*.docx"))) as z:
+                xml = z.read("word/document.xml").decode("utf-8")
+            self.assertIn("Links between findings", xml)
+            self.assertIn("F-001, F-002", xml)
 
 
 def snapshot(db: Path) -> dict:
