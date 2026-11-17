@@ -74,7 +74,7 @@
   "max_billed_tokens_per_run": 0
  },
  "report": {
-  "_doc": "Cover page, header and footer of the Word report. Empty values use the defaults: title = 'Forensic analysis' + main host, client = case name, subtitle = first sentence of the verdict, prepared_by = Sleuthline. template: path of the .docx template (default config\\report_template.docx). logo (header, PNG/JPG) and cover_image (cover background, A4 portrait, e.g. 1240x1754 px): optional local image files, for your own branding. investigator and about are optional: leave them empty to hide the 'Lead investigator' and 'About' blocks.",
+  "_doc": "Defaults of the cover page, header and footer of the Word report. Put your own values in <root>\\pipeline\\local\\report.json (same keys, never overwritten by an update; see local\\report_example.json). Empty values: title = 'Forensic analysis' + main host, client = case name, subtitle = first sentence of the verdict, prepared_by = Sleuthline. logo (header) and cover_image (cover background, A4 portrait, 1240 x 1754 px): image files, path relative to local\\. investigator and about are optional.",
   "template": "",
   "logo": "",
   "cover_image": "",

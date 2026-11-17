@@ -109,7 +109,23 @@ def load_config(path: Path, profile: str | None):
     limits = {**DEFAULT_LIMITS, **cfg.get("limits", {}), "evidence_policy": guards.load_policy(cfg.get("evidence_policy"))}
     lang = str(cfg.get("report_language") or "en").strip()
     return name, {**profiles[name], "_keys_file": str(KEYS_FILE), "_report_language": lang,
-                  "_report": cfg.get("report") or {}}, limits
+                  "_report": report_settings(cfg)}, limits
+
+
+def report_settings(cfg: dict) -> dict:
+    """Cover / header / footer of the report: 'report' section of llm_config.json, overridden by local\\report.json
+    (specific to the VM, never overwritten by an update). Relative image paths are relative to local\\."""
+    rc = dict(cfg.get("report") or {})
+    f = LOCAL_DIR / "report.json"
+    if f.exists():
+        try:
+            rc.update({k: v for k, v in json.loads(f.read_text(encoding="utf-8-sig")).items() if not k.startswith("_")})
+        except (OSError, ValueError) as e:
+            raise SystemExit(f"Invalid {f}: {e}")
+    for k in ("logo", "cover_image", "template"):
+        if rc.get(k) and not Path(rc[k]).is_absolute():
+            rc[k] = str(LOCAL_DIR / rc[k])
+    return rc
 
 
 def language_name(code: str) -> str:

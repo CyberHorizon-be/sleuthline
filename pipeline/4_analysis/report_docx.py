@@ -582,8 +582,11 @@ def long_date(d: dt.datetime) -> str:
 def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list, pcfg: dict, log) -> Path:
     rc = pcfg.get("_report") or {}
     tpl = Path(rc.get("template") or DEFAULT_TEMPLATE)
-    if not tpl.is_absolute() and not tpl.exists():
-        tpl = DEFAULT_TEMPLATE.parent / tpl
+    if not tpl.exists():
+        alt = DEFAULT_TEMPLATE.parent / tpl.name
+        if not alt.exists():
+            log(f"  report: template not found ({tpl}), default template used")
+        tpl = alt if alt.exists() else DEFAULT_TEMPLATE
     R = Report(tpl)
     R.set_language(pcfg.get("_report_language") or "en")
     R.set_branding(rc.get("logo"), rc.get("cover_image"), log)

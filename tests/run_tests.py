@@ -512,6 +512,24 @@ class TestAgentEndToEnd(unittest.TestCase):
             self.assertEqual(len(st["iocs"]), 1)
             self.assertEqual(len(st["injection_alerts"]), 1)
 
+    def test_report_settings_local_override(self):
+        """local\\report.json overrides the 'report' section of llm_config.json; image paths are relative to local\\."""
+        with tempfile.TemporaryDirectory() as d:
+            old = analyze.LOCAL_DIR
+            analyze.LOCAL_DIR = Path(d)
+            try:
+                cfg = {"report": {"prepared_by": "", "classification": "TLP:AMBER", "logo": ""}}
+                self.assertEqual(analyze.report_settings(cfg)["classification"], "TLP:AMBER")
+                (Path(d) / "report.json").write_text(json.dumps({"_doc": "x", "prepared_by": "ACME", "logo": "logo.png"}),
+                                                     encoding="utf-8")
+                rc = analyze.report_settings(cfg)
+                self.assertEqual(rc["prepared_by"], "ACME")
+                self.assertEqual(rc["classification"], "TLP:AMBER")
+                self.assertEqual(rc["logo"], str(Path(d) / "logo.png"))
+                self.assertNotIn("_doc", rc)
+            finally:
+                analyze.LOCAL_DIR = old
+
     def test_report_language_in_prompt(self):
         agent = analyze.Agent.__new__(analyze.Agent)
         agent.language, agent.rules, agent.guidance = analyze.language_name("fr"), "r", analyze.parse_guidance(Path("/nonexistent"))
