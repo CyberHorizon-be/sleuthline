@@ -491,7 +491,16 @@ class TestAgentEndToEnd(unittest.TestCase):
             self.assertIn("independent source", lowered["result"])
             self.assertEqual(len(st["iocs"]), 1)
             self.assertEqual(st["steps"]["1"]["status"], analyze.DONE)
-            self.assertTrue(list((case / "analysis").glob("report_*.docx")))
+            rep = list((case / "analysis").glob("report_*.docx"))
+            self.assertTrue(rep)
+            # report built on the template: cover filled in, numbered sections, no placeholder left
+            import zipfile
+            with zipfile.ZipFile(rep[0]) as z:
+                xml = "".join(z.read(n).decode("utf-8") for n in z.namelist() if n.startswith("word/") and n.endswith(".xml"))
+            self.assertNotIn("{{", xml)
+            for text in ("INCIDENT RESPONSE REPORT", "2. Executive summary", "Appendix A. Findings by severity",
+                         "Execution of EVIL.EXE", "prefetch/p.csv#1"):
+                self.assertIn(text, xml)
             self.assertTrue((case / "analysis" / "key_timeline.csv").exists())
             refused = [json.loads(l) for l in (case / "analysis" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertTrue(any(str(r.get("result", "")).startswith("REFUSED") for r in refused))

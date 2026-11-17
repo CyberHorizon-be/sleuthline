@@ -108,7 +108,8 @@ def load_config(path: Path, profile: str | None):
         raise SystemExit(f"Profile '{name}' missing from {path} (profiles: {', '.join(profiles)})")
     limits = {**DEFAULT_LIMITS, **cfg.get("limits", {}), "evidence_policy": guards.load_policy(cfg.get("evidence_policy"))}
     lang = str(cfg.get("report_language") or "en").strip()
-    return name, {**profiles[name], "_keys_file": str(KEYS_FILE), "_report_language": lang}, limits
+    return name, {**profiles[name], "_keys_file": str(KEYS_FILE), "_report_language": lang,
+                  "_report": cfg.get("report") or {}}, limits
 
 
 def language_name(code: str) -> str:

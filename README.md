@@ -170,7 +170,8 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test04   # 3
     │                    normalize_map.json   outputs -> timeline mappings
     │                    parser_registry.json artifact -> validated parsing tool (and registry keys: registry_keys)
     │                    recmd\Sleuthline_Complement.reb   RECmd batch complementing the Kroll batch
-    │                    llm_config.json      model profiles (active profile: claude) and report language
+    │                    llm_config.json      model profiles (active profile: claude), report language, report cover
+    │                    report_template.docx Word template of the report (cover, header, footer, fonts, styles)
     │                    api_keys_template.txt     template of api_keys.txt (the real file is never versioned)
     │                    guidance_template.txt     template of the questions / IOCs file of a case
     └── docs\            POLICY_parsers.md    rule "existing tool before custom parser"
@@ -563,11 +564,13 @@ An interrupted analysis (network error, Ctrl+C) resumes where it stopped: run th
 
 **Deliverables** (in `<case>\analysis\`):
 
-- `report_<case>_<date>.docx`: full incident response report: executive summary and verdict; scope, tools and versions; methodology and limitations; incident timeline; detailed findings with, for each piece of evidence, UTC timestamp, artifact, detail, reference and original path; IOCs, MITRE ATT&CK mapping, answers to the questions, recommendations; appendices (steps, detections, notes, coverage, traceability with SHA-256).
+- `report_<case>_<date>.docx`: incident response report built on `config\report_template.docx`: cover page, contents, about this report; introduction (purpose, sources analysed, limitations); executive summary with the verdict and the main findings; incident overview (attack timeline, MITRE ATT&CK techniques, affected systems and accounts, IOCs); technical analysis with, for each finding, the observed facts, the analysis and every piece of evidence (UTC timestamp, artifact, detail, reference and original path); conclusions (answers to the questions); recommendations; appendices (findings by severity, analysis steps, guidance, collection and processing, evidence timeline, detections, notes, coverage, traceability with SHA-256).
 - `key_timeline.csv`, `iocs.csv`, `incident_timeline.csv` (every event of the incident window).
 - `findings.json` (analysis state) and `transcript.jsonl` (full trace).
 
-After opening the report in Word, update the table of contents (F9).
+When the report is opened, Word offers to update the fields: answer Yes to fill in the page numbers of the table of contents.
+
+The cover page, the header and the footer are set in the `report` section of `llm_config.json`: title, client, subtitle, prepared for / by, classification (TLP), version, footer, lead investigator and the "About" block. `logo` (header) and `cover_image` (cover background, A4 portrait) take the path of a local image, to add your own branding without putting it in the repository. Empty values use defaults (title = main host, client = case name, subtitle = first sentence of the verdict). `template` points to another `.docx` template if needed.
 
 ## Reproducibility and versions
 
