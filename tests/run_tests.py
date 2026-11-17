@@ -1120,6 +1120,125 @@ class TestClaudeAPI(unittest.TestCase):
 # ------------------------------------------------------------------------------------------
 # Regression on a real case
 # ------------------------------------------------------------------------------------------
+
+class TestMultiHost(unittest.TestCase):
+    """1.2: several hosts in one case (hosts\\<host>\\), merged into one case database."""
+
+    def build(self, d: Path) -> Path:
+        case = Path(d) / "case"
+        for h in ("PC1", "DC01"):
+            build_synthetic_case(case / "hosts" / h)
+        sys.path.insert(0, str(PIPE / "3_normalize"))
+        import merge
+        merge.Merger(case, log=lambda *a: None).run()
+        return case
+
+    def test_merge(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = self.build(d)
+            con = duckdb.connect(str(case / "db" / "case.duckdb"), read_only=True)
+            self.assertEqual(con.execute("SELECT count(*), count(DISTINCT host_id) FROM timeline").fetchone(), (10, 2))
+            self.assertEqual(con.execute("SELECT ref FROM timeline WHERE host_id = 'DC01' AND src_table = 'prefetch' "
+                                         "ORDER BY src_row LIMIT 1").fetchone()[0], "DC01:prefetch/p.csv#1")
+            # raw.<table> = union of the hosts, with _host; per-host schemas; _src_file prefixed like the references
+            self.assertEqual(con.execute("SELECT count(*) FROM raw.prefetch WHERE _host = 'PC1'").fetchone()[0], 2)
+            self.assertEqual(con.execute("SELECT _src_file FROM raw_dc01.prefetch LIMIT 1").fetchone()[0], "DC01:prefetch/p.csv")
+            self.assertEqual(con.execute("SELECT raw_table FROM sources WHERE src_file = 'PC1:evtx/e.csv'").fetchone()[0],
+                             "raw_pc1.evtx")
+            cons = con.execute("SELECT status, count(*) FROM conservation WHERE \"check\" = 'host_to_case' GROUP BY 1").fetchall()
+            self.assertEqual([c[0] for c in cons], ["ok"])
+            meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
+            self.assertEqual([h["id"] for h in json.loads(meta["hosts"])], ["DC01", "PC1"])
+            con.close()
+            db = analyze.CaseDB(case / "db" / "case.duckdb", analyze.DEFAULT_LIMITS)
+            self.assertTrue(db.multi)
+            ev = db.resolve_ref("PC1:prefetch/p.csv#1")
+            self.assertEqual(ev["artifact"], "Prefetch")
+            self.assertIn("EVIL.EXE", db.get_evidence_text(["DC01:prefetch/p.csv#2"]) + db.get_evidence_text(["DC01:prefetch/p.csv#1"]))
+            self.assertIsNone(db.resolve_ref("prefetch/p.csv#1"))        # a reference without its host does not exist
+            self.assertIn("MULTI-HOST CASE: 2 host(s)", db.overview())
+
+    def test_reserved_and_invalid_host_names(self):
+        sys.path.insert(0, str(PIPE / "3_normalize"))
+        import merge
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "hosts" / "network").mkdir(parents=True)
+            with self.assertRaises(SystemExit):
+                merge.units(Path(d))
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "hosts" / "PC 1").mkdir(parents=True)
+            with self.assertRaises(SystemExit):
+                merge.units(Path(d))
+
+    def test_scope_and_sources_per_host(self):
+        req, scope, body = analyze.parse_step_header("Scope: host\nRequires: memory\n\nText")
+        self.assertEqual((req, scope, body.strip()), ({"memory"}, "host", "Text"))
+        self.assertEqual(analyze.parse_step_header("Text")[1], "case")
+        with self.assertRaises(SystemExit):
+            analyze.parse_step_header("Scope: everything\nText")
+        _, steps = analyze.parse_playbook(PIPE / "config" / "PLAYBOOK.md")
+        self.assertEqual(sorted(s["num"] for s in steps if s["scope"] == "case"), [5, 8, 12, 13, 14])
+        # the same artifact type on two hosts = two independent sources
+        e1 = {"artifact": "Prefetch", "ref": "PC1:pecmd/p.csv#1", "host": "PC1"}
+        e2 = {"artifact": "Prefetch", "ref": "DC01:pecmd/p.csv#1", "host": "DC01"}
+        self.assertEqual(len(guards.independent_sources([e1, e2])), 2)
+        m1 = {"artifact": "Memory: malfind", "ref": "PC1:volatility/x.jsonl#1", "host": "PC1"}
+        m2 = {"artifact": "Memory: pslist", "ref": "PC1:volatility/y.jsonl#1", "host": "PC1"}
+        self.assertEqual(guards.independent_sources([m1, m2]), ["PC1/memory"])
+
+    def test_analysis_per_host_and_case(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = self.build(d)
+            script = [
+                {"tool_calls": [{"name": "add_finding", "args": {"title": "EVIL.EXE on the DC", "severity": "critical",
+                                                                 "confidence": "confirmed", "description": "x",
+                                                                 "refs": ["DC01:prefetch/p.csv#1", "DC01:evtx/e.csv#1"]}},
+                                {"name": "step_complete", "args": {"summary": "DC01 done"}}]},
+                {"tool_calls": [{"name": "search", "args": {"text": "EVIL", "host": "PC1"}},
+                                {"name": "add_finding", "args": {"title": "EVIL.EXE on PC1", "severity": "critical",
+                                                                 "confidence": "confirmed", "description": "x",
+                                                                 "refs": ["PC1:prefetch/p.csv#1"]}},
+                                {"name": "step_complete", "args": {"summary": "PC1 done"}}]},
+                {"tool_calls": [{"name": "add_finding", "args": {"title": "Same EVIL.EXE on both hosts", "severity": "critical",
+                                                                 "confidence": "confirmed", "description": "x",
+                                                                 "refs": ["PC1:prefetch/p.csv#1", "DC01:prefetch/p.csv#1"]}},
+                                {"name": "add_timeline_event", "args": {"ts": "2023-11-10 11:03:09", "title": "EVIL.EXE run",
+                                                                        "description": "x", "phase": "execution",
+                                                                        "refs": ["DC01:prefetch/p.csv#1"]}},
+                                {"name": "step_complete", "args": {"summary": "case done"}}]},
+            ]
+            (Path(d) / "script.json").write_text(json.dumps(script), encoding="utf-8")
+            cfg = {"active": "mock", "profiles": {"mock": {"provider": "mock", "model": "mock", "script": str(Path(d) / "script.json")}}}
+            (Path(d) / "cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
+            pb = Path(d) / "PLAYBOOK.md"
+            pb.write_text("# P\n\n## Rules\n\n1. Facts.\n\n## Step 1: Execution\nScope: host\n\nLook.\n\n"
+                          "## Step 2: Memory (RAM)\nScope: host\nRequires: memory\n\nVolatility.\n\n"
+                          "## Step 3: Lateral movement\n\nLink the hosts.\n", encoding="utf-8")
+            self.assertEqual(analyze.main([str(case), "--config", str(Path(d) / "cfg.json"), "--playbook", str(pb)]), 0)
+            st = json.loads((case / "analysis" / "findings.json").read_text(encoding="utf-8"))
+            self.assertEqual({k: v["status"] for k, v in st["steps"].items()},
+                             {"1@DC01": "done", "1@PC1": "done", "2@DC01": "not_applicable", "2@PC1": "not_applicable", "3": "done"})
+            self.assertEqual(st["usage"]["calls"], 3)                   # 2 host runs + 1 case run, no call for step 2
+            f = {x["title"]: x for x in st["findings"]}
+            self.assertEqual(f["EVIL.EXE on the DC"]["hosts"], ["DC01"])
+            self.assertEqual(f["EVIL.EXE on the DC"]["confidence"], "confirmed")       # Prefetch + EVTX of the DC
+            self.assertEqual(f["EVIL.EXE on PC1"]["confidence"], "probable")           # one source
+            self.assertEqual(f["Same EVIL.EXE on both hosts"]["hosts"], ["DC01", "PC1"])
+            self.assertEqual(f["Same EVIL.EXE on both hosts"]["confidence"], "confirmed")  # two hosts = two sources
+            self.assertEqual(f["EVIL.EXE on PC1"]["step"], "1@PC1")
+            self.assertEqual(st["timeline_events"][0]["hosts"], ["DC01"])
+            tr = [json.loads(l) for l in (case / "analysis" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
+            res = next(r for r in tr if r.get("name") == "search")["result"]
+            self.assertIn("PC1:prefetch/p.csv#1", res)
+            self.assertNotIn("DC01:", res)
+            import zipfile
+            rep = list((case / "analysis").glob("report_*.docx"))
+            with zipfile.ZipFile(rep[0]) as z:
+                xml = z.read("word/document.xml").decode("utf-8")
+            for text in ("Systems analysed", "Host of the case", "Execution — DC01", "DC01:prefetch/p.csv#1"):
+                self.assertIn(text, xml)
+
+
 def snapshot(db: Path) -> dict:
     con = duckdb.connect(str(db), read_only=True)
     try:

@@ -77,7 +77,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 58 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 62 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -160,6 +160,7 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test04   # 3
     │                    network.py           Suricata job (network captures)
     │                    sample_outputs.py    samples of the outputs (development aid)
     ├── 3_normalize\     normalize.py         loading into DuckDB: timeline, detections, hash lists
+    │                    merge.py             several hosts: merges the host databases into the case database
     ├── 4_analysis\      analyze.py           analysis agent (LLM)
     │                    llm.py               model access (Claude, OpenAI-compatible, Ollama...)
     │                    guards.py            evidence policy and untrusted-evidence protection
@@ -268,7 +269,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (58 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (62 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```
@@ -286,6 +287,22 @@ C:\Sleuthline\cases\test01\
 ├── memory\              optional: the memory image of the same machine (one image)
 └── pcap\                optional: network captures of the incident (.pcap, .pcapng)
 ```
+
+**Several machines in one case (1.2).** When the intrusion touches several machines (e.g. a workstation and the domain controller), put one folder per machine in `hosts\`, each laid out like a single-machine case, and the captures of the whole network in `pcap\` at the root:
+
+```
+C:\Sleuthline\cases\case05\
+├── hosts\
+│   ├── DESKTOP-SDN1RPT\
+│   │   ├── kape\        KAPE collection of this machine (or raw\, or at the root of the folder)
+│   │   └── memory\      optional: its memory image
+│   └── CITADEL-DC01\
+│       ├── kape\
+│       └── memory\
+└── pcap\                optional: captures of the whole network (tap, firewall)
+```
+
+The folder names are the host ids used everywhere (letters, digits, `-` and `_`; `network` is reserved). The same commands work: `inventory`, `parse` and `normalize` run for each machine (with its own time zone), then for the captures of the case, and `normalize` merges everything into `<case>\db\case.duckdb` (`<case>\db\merge_report.md`). `--host <name>` limits `inventory`, `parse` or `normalize` to one machine, e.g. to parse the DC again. In the analysis, the steps about one machine (execution, persistence, accounts...) run once per machine, and the steps that link them (network, lateral movement, exfiltration, timeline, summary) once for the case. References become `<host>:<output>#<record>`, every finding lists its machines, and evidence from two machines counts as two sources. A case without `hosts\` works exactly as before.
 
 **Dates of the copy.** Copying the collection to the VM can give some files the date of the copy: on Lab 1, LNK files appeared in the timeline with the date of the analysis day. Say so in the guidance file (step 5) so that the agent treats those dates as copy artifacts, not evidence.
 
@@ -623,7 +640,8 @@ The fast tests (about ten seconds) cover the SQL safeguards of the agent, the ev
 
 Found during the tests, planned for the next versions:
 
-- **One host per case.** Local-time sources are converted with the time zone of the case's host; clock offsets between sources (e.g. capture vs host, one hour on Case 001) are found by the agent, not computed by the program (`clock_offset_s` is reserved for it).
+- **Clocks of several sources.** Local-time sources are converted with the time zone of their own host; clock offsets between hosts or with the captures (e.g. one hour between the capture and the host on Case 001) are found by the agent on pivots, not computed by the program (`clock_offset_s` is reserved for it).
+- **Several hosts (1.2)**: tested here on synthetic data only; the two-host run of Case 001 (workstation + domain controller + capture) is still to be done. Only Windows hosts. The case database is a copy of the host databases (about twice the disk space).
 - **Steps that always run**: only the steps dedicated to an absent source (memory, network) are skipped. With a memory image or a capture only, the other steps still call the model, on purpose (they found critical and high findings on the memory-only and network-only cases).
 - **Validation**: tested on two public cases (four runs). The installation was tested on the test VM: clean installation from GitHub with `Install-All.ps1`, then Volatility 3, Suricata and Npcap with `02_Install-Tools.ps1`.
 - **Suricata (Windows build)**: 9 recent ET Open rules are rejected (`file.magic`); since 1.1 they are listed in the job log.

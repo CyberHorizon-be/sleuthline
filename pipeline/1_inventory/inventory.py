@@ -186,7 +186,7 @@ SERVICE_PROFILE_RX = re.compile(r"\\ServiceProfiles\\([^\\]+)\\", re.IGNORECASE)
 # Reading the collection
 # --------------------------------------------------------------------------
 # Sub-folders of a case that are never a KAPE collection
-CASE_RESERVED_DIRS = {"memory", "pcap", "inventory", "parsed", "db", "analysis", "hashsets"}
+CASE_RESERVED_DIRS = {"memory", "pcap", "inventory", "parsed", "db", "analysis", "hashsets", "hosts"}
 
 
 def _is_collection(folder: Path) -> bool:

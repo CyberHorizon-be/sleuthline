@@ -143,8 +143,9 @@ def parse_playbook(path: Path):
         title = title.strip()
         m = re.match(r"(?i)step\s+(\d+)\s*[:\-—]\s*(.+)", title)
         if m:
-            requires, body = parse_requires(body)
-            steps.append({"num": int(m.group(1)), "title": m.group(2).strip(), "body": body.strip(), "requires": requires})
+            requires, scope, body = parse_step_header(body)
+            steps.append({"num": int(m.group(1)), "title": m.group(2).strip(), "body": body.strip(), "requires": requires,
+                          "scope": scope})
         elif title.lower().startswith("rules"):
             rules = body.strip()
     if not steps:
@@ -152,22 +153,55 @@ def parse_playbook(path: Path):
     return rules, steps
 
 
-def parse_requires(body: str):
-    """Optional first line of a step: "Requires: memory" (or network, disk; several separated by |).
-    The step needs at least one of these sources. Missing line or "any": the step always runs."""
+def parse_step_header(body: str):
+    """Optional first lines of a step, in any order:
+      "Requires: memory" (or network, disk; several separated by |): the step needs at least one of these
+      sources. Missing line or "any": the step always runs.
+      "Scope: host" (run once per host of a multi-host case) or "Scope: case" (once for the case, default).
+    Returns (requires, scope, body without these lines)."""
     lines = body.strip("\n").split("\n")
     while lines and not lines[0].strip():
         lines.pop(0)
-    if lines:
-        m = re.fullmatch(r"(?i)\s*requires\s*:\s*(.+?)\s*", lines[0])
-        if m:
-            vals = [v.strip().lower() for v in m.group(1).split("|") if v.strip()]
+    requires, scope = None, "case"
+    while lines:
+        m = re.fullmatch(r"(?i)\s*(requires|scope)\s*:\s*(.+?)\s*", lines[0])
+        if not m:
+            break
+        if m.group(1).lower() == "requires":
+            vals = [v.strip().lower() for v in m.group(2).split("|") if v.strip()]
             bad = [v for v in vals if v not in SOURCE_KINDS + ("any",)]
             if bad:
                 raise SystemExit(f"Playbook: unknown source in \"{lines[0].strip()}\" ({', '.join(bad)}): "
                                  f"use any, {', '.join(SOURCE_KINDS)}")
-            return (None if "any" in vals or not vals else set(vals)), "\n".join(lines[1:])
-    return None, body
+            requires = None if "any" in vals or not vals else set(vals)
+        else:
+            scope = m.group(2).strip().lower()
+            if scope not in ("host", "case"):
+                raise SystemExit(f"Playbook: unknown scope in \"{lines[0].strip()}\": use host or case")
+        lines.pop(0)
+    return requires, scope, "\n".join(lines)
+
+
+def parse_requires(body: str):
+    """(requires, body): see parse_step_header."""
+    requires, _, rest = parse_step_header(body)
+    return requires, rest
+
+
+def step_key(num, host: str | None = None) -> str:
+    """Key of a step run in findings.json: "3", or "3@CITADEL-DC01" for a host step of a multi-host case."""
+    return f"{num}@{host}" if host else str(num)
+
+
+def step_sort_key(key) -> tuple:
+    num, _, host = str(key).partition("@")
+    return (int(num) if num.isdigit() else 999, host)
+
+
+def ref_host(ref: str) -> str | None:
+    """Host of a reference of a multi-host case (<host>:<output>#<record>)."""
+    head, sep, _ = str(ref).partition(":")
+    return head if sep and "/" not in head and "#" not in head else None
 
 
 def step_applicable(step: dict, sources: dict) -> tuple[bool, str]:
@@ -304,6 +338,20 @@ class CaseDB:
         self.src_to_table = dict(self.con.execute(
             "SELECT src_file, raw_table FROM sources WHERE raw_table IS NOT NULL").fetchall())
 
+    def hosts(self) -> list[dict]:
+        """Hosts of a multi-host case (meta 'hosts', written by merge.py); [] for a single-host case."""
+        try:
+            row = self.con.execute("SELECT value FROM meta WHERE key = 'hosts'").fetchone()
+            return json.loads(row[0]) if row and row[0] else []
+        except (duckdb.Error, ValueError):
+            return []
+
+    @property
+    def multi(self) -> bool:
+        if not hasattr(self, "_hosts"):
+            self._hosts = self.hosts()
+        return bool(self._hosts)
+
     def has_table(self, name: str) -> bool:
         return bool(self.con.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'main' "
                                      "AND table_name = ?", [name]).fetchone()[0])
@@ -427,6 +475,19 @@ class CaseDB:
     # -- overview for the prompt ---------------------------------------------------------
     def overview(self) -> str:
         parts = [sources_line(self.sources())]
+        if self.multi:
+            hl = [h for h in self.hosts() if h.get("kind") == "host"]
+            net = any(h.get("kind") == "network" for h in self.hosts())
+            parts.append(
+                f"MULTI-HOST CASE: {len(hl)} host(s): " + ", ".join(
+                    f"{h['id']} (" + ", ".join(k for k in SOURCE_KINDS if ((h.get('sources') or {}).get(k) or {}).get('present'))
+                    + ")" for h in hl)
+                + ("; plus network captures of the whole case (host_id = 'network')" if net else "") + ". "
+                "Every common table (timeline, detections, timeline_all, sources, jobs, coverage, conservation, hash_hits, "
+                "artifact_summary) has a host_id column; the raw.<table> views have a _host column (raw_<host>.<table> are "
+                "the per-host tables). References are '<host_id>:<output>#<record>'. Local times were converted with the time "
+                "zone of their own host. The clocks of the hosts and of the captures may differ: check the offset on a pivot "
+                "seen on both sides before correlating times. The hosts tool lists them.")
         meta = dict(self.run("SELECT key, value FROM meta", max_rows=100)[1])
         parts.append("Metadata: " + json.dumps({k: meta.get(k) for k in (
             "case", "normalized_at_utc", "machine_active_time_bias_min", "timezone", "ref_format", "map_version")}, ensure_ascii=False))
@@ -522,12 +583,14 @@ class State:
     def compact(self) -> str:
         """Summary of the state sent to the model at the start of each step."""
         out = []
-        for num_, s in sorted(self.d["steps"].items(), key=lambda x: int(x[0])):
+        for num_, s in sorted(self.d["steps"].items(), key=lambda x: step_sort_key(x[0])):
             if s.get("summary"):
-                out.append(f"Step {num_} ({s.get('title')}): {s['summary'][:1500]}")
+                n, _, h = str(num_).partition("@")
+                out.append(f"Step {n}{' on host ' + h if h else ''} ({s.get('title')}): {s['summary'][:1500]}")
         if self.d["findings"]:
             out.append("Recorded findings:\n" + "\n".join(
-                f"  {f['id']} [{f['severity']}/{f['confidence']}] {f['title']} ({f.get('first_ts') or '?'} → {f.get('last_ts') or '?'}) "
+                f"  {f['id']} [{f['severity']}/{f['confidence']}]{' {' + ', '.join(f['hosts']) + '}' if f.get('hosts') else ''} "
+                f"{f['title']} ({f.get('first_ts') or '?'} → {f.get('last_ts') or '?'}) "
                 f"refs: {', '.join(e['ref'] for e in f['evidence'][:4])}" for f in self.d["findings"]))
         if self.d["timeline_events"]:
             out.append(f"Timeline events already recorded: {len(self.d['timeline_events'])}" + "\n" + "\n".join(
@@ -540,7 +603,7 @@ class State:
 # ------------------------------------------------------------------------------------------
 # Tools exposed to the model
 # ------------------------------------------------------------------------------------------
-DATA_TOOLS = {"sql_query", "describe_table", "search", "timeline_window", "get_evidence"}   # results = case data
+DATA_TOOLS = {"sql_query", "describe_table", "search", "timeline_window", "get_evidence", "hosts"}   # results = case data
 REFS = {"type": "array", "items": {"type": "string"}, "description": "evidence references (ref column, or <_src_file>#<_src_row>)"}
 TOOLS = [
     {"name": "sql_query", "description": "Runs a read-only DuckDB SQL query on the case database (one query, with LIMIT). Returns a text table.",
@@ -549,13 +612,21 @@ TOOLS = [
      "parameters": {"type": "object", "properties": {"table": {"type": "string"}}, "required": ["table"]}},
     {"name": "search", "description": "Case-insensitive full-text search in the timeline (path, description, user_name) and the detections, optionally within a UTC time window.",
      "parameters": {"type": "object", "properties": {"text": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
-                                                    "artifact_like": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["text"]}},
+                                                    "artifact_like": {"type": "string"}, "limit": {"type": "integer"},
+                                                    "host": {"type": "string", "description": "multi-host case: only this host (host_id)"}},
+                    "required": ["text"]}},
     {"name": "timeline_window", "description": "Timeline events (and detections) between two UTC instants, optionally filtered (text, category).",
      "parameters": {"type": "object", "properties": {"start": {"type": "string"}, "end": {"type": "string"}, "contains": {"type": "string"},
                                                     "category": {"type": "string"}, "exclude_artifacts": {"type": "array", "items": {"type": "string"}},
-                                                    "limit": {"type": "integer"}}, "required": ["start", "end"]}},
+                                                    "limit": {"type": "integer"},
+                                                    "host": {"type": "string", "description": "multi-host case: only this host (host_id)"}},
+                    "required": ["start", "end"]}},
     {"name": "get_evidence", "description": "Full detail (raw record) of evidence references.",
      "parameters": {"type": "object", "properties": {"refs": REFS}, "required": ["refs"]}},
+    {"name": "hosts", "description": "Multi-host case: the hosts (host_id, real name, sources, time zone, timeline rows, "
+     "findings per host so far). Every common table has a host_id column, the raw.* views a _host column, and references "
+     "start with '<host_id>:'.",
+     "parameters": {"type": "object", "properties": {}}},
     {"name": "coverage", "description": "What happened to each kind of artifact, computed by the program: not_collected (absent "
      "from the case), not_covered (no tool), not_parsed (tool failed / missing), empty (parsed, 0 record), analyzed (records "
      "in the database). Check it before writing that something was not found.",
@@ -629,12 +700,18 @@ class Agent:
             fh.write(json.dumps({"ts": now_utc(), "step": self.current_step, "kind": kind, **data}, ensure_ascii=False, default=str) + "\n")
 
     # -- evidence validation ---------------------------------------------------------------
+    def hosts_of(self, evidence: list[dict]) -> list[str]:
+        """Hosts of a finding / event / IOC, from its references (multi-host case), never declared by the model."""
+        return sorted({e["host"] for e in evidence if e.get("host")}) if self.db.multi else []
+
     def resolve_all(self, refs):
         if not isinstance(refs, list) or not refs:
             return None, "at least one evidence reference (refs) is required"
         resolved, missing = [], []
         for r in refs[:50]:
             x = self.db.resolve_ref(r)
+            if x and self.db.multi:
+                x["host"] = ref_host(x["ref"])
             (resolved.append(x) if x else missing.append(str(r)))
         if missing:
             return None, ("references not found in the database: " + ", ".join(missing[:10]) +
@@ -683,23 +760,47 @@ class Agent:
         sample = self.db.query_text(f"SELECT * FROM {t} LIMIT 3", 3)
         return cols + "\n\nSample:\n" + sample
 
-    def t_search(self, text, start=None, end=None, artifact_like=None, limit=100):
+    def host_filter(self, host, cond: list, params: list):
+        if host and self.db.multi:
+            cond.append("host_id = ?")
+            params.append(str(host).strip())
+
+    def cols_out(self) -> str:
+        return ("host_id, " if self.db.multi else "") + "ts, artifact, ts_desc, user_name, path, description, ref"
+
+    def t_hosts(self):
+        if not self.db.multi:
+            return "Single-host case: no host_id column; every reference belongs to the analyzed host."
+        out = []
+        for h in self.db.hosts():
+            s = h.get("sources") or {}
+            have = ", ".join(k for k in SOURCE_KINDS if (s.get(k) or {}).get("present")) or "?"
+            nf = sum(1 for f in self.state.d["findings"] if h["id"] in (f.get("hosts") or []))
+            out.append(f"- {h['id']} ({'case-level network captures' if h.get('kind') == 'network' else 'host'}"
+                       f"{', name in the artifacts: ' + h['name'] if h.get('name') else ''}): sources {have}; "
+                       f"ActiveTimeBias {h.get('active_time_bias_min')}; {h.get('timeline_rows', 0):,} timeline rows; "
+                       f"{nf} finding(s) so far")
+        return "Hosts of the case:\n" + "\n".join(out)
+
+    def t_search(self, text, start=None, end=None, artifact_like=None, limit=100, host=None):
         limit = min(int(limit or 100), 500)
         cond, params = ["(path ILIKE ? OR description ILIKE ? OR user_name ILIKE ?)"], [f"%{text}%"] * 3
+        self.host_filter(host, cond, params)
         if start:
             cond.append("ts >= ?"); params.append(norm_ts(start))
         if end:
             cond.append("ts <= ?"); params.append(norm_ts(end))
         if artifact_like:
             cond.append("artifact ILIKE ?"); params.append(f"%{artifact_like}%")
-        cols, rows = self.db.run("SELECT ts, artifact, ts_desc, user_name, path, description, ref FROM timeline_all WHERE "
+        cols, rows = self.db.run(f"SELECT {self.cols_out()} FROM timeline_all WHERE "
                                  + " AND ".join(cond) + f" ORDER BY ts LIMIT {limit + 1}", params, limit + 1)
         n = self.db.run("SELECT count(*) FROM timeline_all WHERE " + " AND ".join(cond), params, 1)[1][0][0]
         return format_table(cols, rows[:limit], self.limits["max_result_chars"], footer=f"({n} occurrence(s) in total, {min(n, limit)} shown)")
 
-    def t_timeline_window(self, start, end, contains=None, category=None, exclude_artifacts=None, limit=200):
+    def t_timeline_window(self, start, end, contains=None, category=None, exclude_artifacts=None, limit=200, host=None):
         limit = min(int(limit or 200), 1000)
         cond, params = ["ts BETWEEN ? AND ?"], [norm_ts(start), norm_ts(end)]
+        self.host_filter(host, cond, params)
         if contains:
             cond.append("(path ILIKE ? OR description ILIKE ?)"); params += [f"%{contains}%"] * 2
         if category:
@@ -708,7 +809,7 @@ class Agent:
             cond.append("artifact NOT ILIKE ?"); params.append(f"%{x}%")
         where = " AND ".join(cond)
         n = self.db.run(f"SELECT count(*) FROM timeline_all WHERE {where}", params, 1)[1][0][0]
-        cols, rows = self.db.run(f"SELECT ts, artifact, ts_desc, user_name, path, description, ref FROM timeline_all WHERE {where} "
+        cols, rows = self.db.run(f"SELECT {self.cols_out()} FROM timeline_all WHERE {where} "
                                  f"ORDER BY ts LIMIT {limit}", params, limit)
         hint = "" if n <= limit else ": too many events, narrow the window or filter (contains, category, exclude_artifacts)"
         return format_table(cols, rows, self.limits["max_result_chars"], footer=f"({n} event(s) in the window, {len(rows)} shown{hint})")
@@ -727,6 +828,8 @@ class Agent:
         f = {"id": self.state.next_id("F", "findings"), "step": self.current_step, "title": title, "severity": severity,
              "confidence_declared": confidence, "category": category, "mitre": mitre or [], "description": description,
              "analysis": analysis, "evidence": ev, "created": now_utc()}
+        if self.db.multi:
+            f["hosts"] = self.hosts_of(ev)
         msg = self.apply_policy(f)
         self.state.d["findings"].append(f)
         self.state.save()
@@ -755,6 +858,8 @@ class Agent:
         known = {e["ref"] for e in f["evidence"]}
         added = [e for e in ev if e["ref"] not in known]
         f["evidence"] += added
+        if self.db.multi:
+            f["hosts"] = self.hosts_of(f["evidence"])
         f.setdefault("confidence_declared", f.get("confidence"))
         msg = self.apply_policy(f)
         self.state.save()
@@ -766,6 +871,8 @@ class Agent:
             return "REFUSED: " + err
         e = {"id": self.state.next_id("T", "timeline_events"), "step": self.current_step, "ts": norm_ts(ts), "title": title,
              "phase": phase, "mitre": mitre or [], "description": description, "evidence": ev}
+        if self.db.multi:
+            e["hosts"] = self.hosts_of(ev)
         self.state.d["timeline_events"].append(e)
         self.state.save()
         return f"OK: event {e['id']} added to the timeline."
@@ -778,12 +885,16 @@ class Agent:
         for i in self.state.d["iocs"]:
             if (i["type"].lower(), i["value"].strip().lower()) == key:
                 i["evidence"] += [x for x in ev if x["ref"] not in {y["ref"] for y in i["evidence"]}]
+                if self.db.multi:
+                    i["hosts"] = self.hosts_of(i["evidence"])
                 i["context"] = i["context"] if context in i["context"] else i["context"] + "; " + context
                 self.state.save()
                 return f"OK: IOC {i['id']} already known, evidence merged."
         tss = sorted(x["ts"] for x in ev if x.get("ts") and x["ts"] != "None")
         i = {"id": self.state.next_id("I", "iocs"), "type": type, "value": value.strip(), "context": context, "evidence": ev,
              "first_seen": tss[0] if tss else None, "last_seen": tss[-1] if tss else None, "step": self.current_step}
+        if self.db.multi:
+            i["hosts"] = self.hosts_of(ev)
         self.state.d["iocs"].append(i)
         self.state.save()
         return f"OK: IOC {i['id']} recorded."
@@ -889,12 +1000,22 @@ DATABASE STRUCTURE:
 {overview}
 """
 
-    def step_prompt(self, step: dict, total: int) -> str:
+    def step_prompt(self, step: dict, total: int, host: str | None = None) -> str:
         sweep = self.ioc_sweep_text()
         if sweep:
             sweep = self.untrusted.wrap(sweep, "ioc_sweep")[0]
-        return f"""STEP {step['num']} / {total}: {step['title']}
-
+        scope = ""
+        if host:
+            scope = (f"\nSCOPE OF THIS RUN: host {host} only. Filter the common tables on host_id = '{host}', the raw.* views on "
+                     f"_host = '{host}' (or query raw_{re.sub(r'[^a-z0-9_]', '_', host.lower())}.<table>), and pass host = '{host}' "
+                     "to search and timeline_window. Its references start with '" + host + ":'. The other hosts get their own "
+                     "run of this step; the links between hosts are analysed in the case steps (lateral movement, "
+                     "exfiltration, timeline and correlation). Record what this host shows, citing its references.\n")
+        elif self.db.multi:
+            scope = ("\nSCOPE OF THIS RUN: the whole case (every host and the captures). Start from what each host showed "
+                     "(analysis state below) and establish the links between the hosts, with references from each side.\n")
+        return f"""STEP {step['num']} / {total}: {step['title']}{' — host ' + host if host else ''}
+{scope}
 {step['body']}
 
 ANALYSIS STATE (previous steps):
@@ -1163,35 +1284,55 @@ def main(argv=None):
                 if guidance["iocs"] and (args.force or not state.d.get("ioc_sweep")):
                     agent.ioc_sweep()
                 sel = select_steps(args.steps, steps)
-                todo = [s for s in steps if s["num"] in sel and (args.force or state.d["steps"].get(str(s["num"]), {}).get("status") != DONE)]
-                sources = db.sources()
-                runnable = []
-                for step in todo:
-                    ok, reason = step_applicable(step, sources)
-                    if ok:
-                        runnable.append(step)
+                host_list = [h for h in db.hosts() if h.get("kind") == "host"]
+                runs = []                      # (step, host or None)
+                for step in steps:
+                    if step["num"] not in sel:
                         continue
-                    # Step dedicated to a source the case does not contain: no model call
-                    state.purge_step(step["num"])
-                    state.d["steps"][str(step["num"])] = {"title": step["title"], "status": NOT_APPLICABLE, "reason": reason,
-                                                         "started": now_utc(), "ended": now_utc(), "duration_s": 0,
-                                                         "tool_calls": 0, "summary": f"Not applicable: {reason}.", "gaps": ""}
+                    if host_list and step.get("scope") == "host":
+                        runs += [(step, h) for h in host_list]
+                    else:
+                        runs.append((step, None))
+                todo = [(st_, h) for st_, h in runs
+                        if args.force or state.d["steps"].get(step_key(st_["num"], h and h["id"]), {}).get("status") != DONE]
+                case_sources = db.sources()
+                runnable = []
+                for step, h in todo:
+                    key = step_key(step["num"], h and h["id"])
+                    ok, reason = step_applicable(step, (h.get("sources") or {}) if h else case_sources)
+                    if ok:
+                        runnable.append((step, h))
+                        continue
+                    # Step dedicated to a source the case (or the host) does not contain: no model call
+                    if h:
+                        reason = reason.replace("in this case", f"for host {h['id']}")
+                    state.purge_step(key)
+                    state.d["steps"][key] = {"title": step["title"], "status": NOT_APPLICABLE, "reason": reason,
+                                             "started": now_utc(), "ended": now_utc(), "duration_s": 0,
+                                             "tool_calls": 0, "summary": f"Not applicable: {reason}.", "gaps": ""}
+                    if h:
+                        state.d["steps"][key]["host"] = h["id"]
                     state.save()
-                    log(f"Step {step['num']}/{len(steps)}: {step['title']}  [not applicable: {reason}]")
+                    log(f"Step {step['num']}/{len(steps)}: {step['title']}{' @ ' + h['id'] if h else ''}  [not applicable: {reason}]")
                 todo = runnable
                 durations = []
-                for k, step in enumerate(todo, 1):
-                    agent.current_step = step["num"]
+                for k, (step, h) in enumerate(todo, 1):
+                    host = h["id"] if h else None
+                    key = step_key(step["num"], host)
+                    agent.current_step = key
                     eta = (f"; ~{fmt_duration(sum(durations) / len(durations) * (len(todo) - k + 1))} left" if durations else "")
-                    log(f"Step {step['num']}/{len(steps)}: {step['title']}  [{k}/{len(todo)}{eta}]")
-                    purged = state.purge_step(step["num"])
+                    log(f"Step {step['num']}/{len(steps)}: {step['title']}{' @ ' + host if host else ''}  [{k}/{len(todo)}{eta}]")
+                    purged = state.purge_step(key)
                     if purged:
                         log(f"  {purged} item(s) from a previous run of this step removed (replay)")
-                    st = state.d["steps"][str(step["num"])] = {}
+                    st = state.d["steps"][key] = {}
                     st.update(title=step["title"], status=RUNNING, started=now_utc())
+                    if host:
+                        st["host"] = host
                     state.save()
                     nf = len(state.d["findings"])
-                    u, n, d = agent.run_conversation(system, agent.step_prompt(step, len(steps)), f"step {step['num']}")
+                    u, n, d = agent.run_conversation(system, agent.step_prompt(step, len(steps), host),
+                                                     f"step {step['num']}" + (f" ({host})" if host else ""))
                     durations.append(d)
                     st.update(status=DONE, ended=now_utc(), duration_s=round(d, 1), tool_calls=n, usage=u,
                               summary=(agent.step_done or {}).get("summary", ""), gaps=(agent.step_done or {}).get("gaps", ""))

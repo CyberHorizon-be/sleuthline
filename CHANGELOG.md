@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-1.1, design in `docs/design/v1.1.md`. To be released as 1.1.0 after the three Case 001 runs (memory only, network only, full case) on the test VM.
+1.1 and 1.2, designs in `docs/design/v1.1.md` and `docs/design/v1.2.md`. To be released after the Case 001 runs on the test VM (memory only, network only, full case, then workstation + domain controller).
 
 - **Sources of a case.** The inventory detects the disk collection, the memory image and the network captures in any combination and writes `inventory\sources.json` (stored in the database `meta`). A case without KAPE collection no longer needs an empty `C` folder. The collection is found at the root of the case, in `raw\`, in `kape\` or in the single sub-folder that holds a `*_CopyLog.csv` (several: stop).
 - **Steps that require a source.** A playbook step can declare `Requires: memory` / `network` / `disk`; without the source, the step is recorded `not_applicable` without any model call. Only steps 4 (memory) and 5 (network) declare it: on the 1.0 runs, every other step found findings with any single source. The agent is told the sources of the case at the start.
@@ -13,7 +13,9 @@
 - README: positioning ("a DFIR evidence platform with an AI investigation layer"), new tables and columns, known limitations updated.
 - **New Word report layout.** The report is built on `config\report_template.docx`: cover page, contents, header with TLP, footer with page X of Y, numbered sections on new pages, navy tables with zebra rows, call-out boxes. New structure: about this report; introduction (purpose, sources analysed, limitations); executive summary (in brief, verdict, main findings); incident overview (attack timeline, MITRE ATT&CK techniques with their tactic, affected systems and accounts, IOCs); technical analysis per finding with its evidence; conclusions; recommendations; appendices. The model's Markdown (bold, bullets, numbered lists, code, tables) is rendered instead of shown raw.
 - New `report` section in `llm_config.json`: title, client, subtitle, prepared for / by, classification, version, footer, lead investigator, "About" block, and logo and cover image. Your own values go in `<root>\pipeline\local\report.json` (never overwritten by an update; example in `config\report_example.json`), images in the same folder. README: *Customizing the report*. The table of contents is refreshed by Word when the report is opened.
-- Tests: 58 tests.
+- **Several hosts in one case** (design in `docs/design/v1.2.md`). One folder per host in `<case>\hosts\` (each one laid out like a single-host case), captures of the whole case in `<case>\pcap\`. `sleuthline.ps1` runs inventory, parse and normalize for each host (with its own time zone) and for the case-level captures (`--host <name>` for one host only); the new `3_normalize\merge.py` merges them into `<case>\db\case.duckdb`: `host_id` on every common table, references `<host>:<output>#<record>`, raw tables per host (`raw_<host>.*`) and union views `raw.<table>` with `_host`, merge conservation checks, hosts in `meta` and `merge_report.md`. A case without `hosts\` is unchanged.
+- Playbook: `Scope: host` (steps 1-4, 6, 7, 9-11: run once per host, queries limited to it) or `Scope: case` (steps 5, 8, 12-14: once, to link the hosts); rule 11 for multi-host cases. Agent: `hosts()` tool, `host` filter on `search` / `timeline_window`, hosts of each finding / event / IOC computed from its references; evidence policy: the same artifact on two hosts = two sources. Report: systems analysed, sources per host, Host column in the timeline and the main findings, hosts of the case in the affected systems, technical analysis per host.
+- Tests: 62 tests.
 
 ## 1.0.0 (2026-10-25)
 

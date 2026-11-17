@@ -24,12 +24,20 @@
     Network: the captures in <case>\pcap\ are analyzed with Suricata during parse;
     other files: sleuthline.ps1 parse <case> --pcap D:\captures\day1.pcap --pcap D:\captures\day2.pcap
 
+    Several hosts: one folder per host in <case>\hosts\ (each laid out like a single-host case:
+    kape\, memory\), captures of the whole case in <case>\pcap\. inventory, parse and normalize run
+    for each host (then for the case-level captures), normalize then merges everything into
+    <case>\db\case.duckdb; analyze and report work on the merged database.
+    --host <name> limits inventory / parse / normalize to one host (the merge still runs).
+
 .EXAMPLE
     C:\Sleuthline\pipeline\sleuthline.ps1 check
 .EXAMPLE
     C:\Sleuthline\pipeline\sleuthline.ps1 all C:\Sleuthline\cases\test01
 .EXAMPLE
     C:\Sleuthline\pipeline\sleuthline.ps1 analyze C:\Sleuthline\cases\test01 --profile claude-sonnet
+.EXAMPLE
+    C:\Sleuthline\pipeline\sleuthline.ps1 parse C:\Sleuthline\cases\case05 --host CITADEL-DC01
 #>
 param(
     [Parameter(Position = 0)][string]$Command = 'help',
@@ -49,13 +57,39 @@ $scripts = [ordered]@{
     normalize = '3_normalize\normalize.py'
     analyze   = '4_analysis\analyze.py'
 }
+$mergeScript = '3_normalize\merge.py'
+
+function Invoke-Script([string]$Name, [string]$Rel, [string]$Target, [string[]]$Extra, [string]$Label) {
+    $script = Join-Path $pipe $Rel
+    Write-Host ""
+    Write-Host "==== $Name$Label : $Rel ====" -ForegroundColor Cyan
+    & $py $script $Target @Extra
+    if ($LASTEXITCODE -ne 0) { throw "$Name$Label ended with code $LASTEXITCODE" }
+}
+
+function Test-CaseCaptures {
+    $d = Join-Path $Case 'pcap'
+    return [bool](Test-Path $d) -and [bool](Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -match '^\.(pcap|pcapng|cap)$' } | Select-Object -First 1)
+}
 
 function Invoke-Step([string]$Name, [string[]]$Extra) {
-    $script = Join-Path $pipe $scripts[$Name]
-    Write-Host ""
-    Write-Host "==== $Name : $($scripts[$Name]) ====" -ForegroundColor Cyan
-    & $py $script $Case @Extra
-    if ($LASTEXITCODE -ne 0) { throw "$Name ended with code $LASTEXITCODE" }
+    # Single-host case, or analysis of a multi-host case (merged database): the case folder itself
+    if (-not $hostDirs -or $Name -eq 'analyze') {
+        Invoke-Script $Name $scripts[$Name] $Case $Extra ''
+        return
+    }
+    foreach ($h in $hostDirs) {
+        if ($onlyHost -and $h.Name -ne $onlyHost) { continue }
+        Invoke-Script $Name $scripts[$Name] $h.FullName $Extra " [host $($h.Name)]"
+    }
+    # Captures of the whole case (<case>\pcap\): processed once, at case level
+    if (-not $onlyHost -and (Test-CaseCaptures)) {
+        $e = $Extra
+        if ($Name -eq 'normalize') { $e = @('--db', (Join-Path $Case 'db\network.duckdb')) + $Extra }
+        Invoke-Script $Name $scripts[$Name] $Case $e ' [case-level captures]'
+    }
+    if ($Name -eq 'normalize') { Invoke-Script 'merge' $mergeScript $Case @() ' [hosts -> case database]' }
 }
 
 function Get-Python {
@@ -81,6 +115,23 @@ if ($cmd -in 'help', '-h', '--help' -or (-not $Case)) {
 }
 if (-not (Test-Path $Case)) { throw "Case folder not found: $Case" }
 $py = Get-Python
+
+# Several hosts: <case>\hosts\<host>\ ; --host <name> limits inventory / parse / normalize to one host
+$onlyHost = $null
+$rest = @()
+for ($i = 0; $i -lt $Options.Count; $i++) {
+    if ($Options[$i] -eq '--host') {
+        if ($i + 1 -ge $Options.Count) { throw '--host needs a host name (folder of <case>\hosts\)' }
+        $onlyHost = $Options[$i + 1]; $i++
+    } else { $rest += $Options[$i] }
+}
+$Options = $rest
+$hostsDir = Join-Path $Case 'hosts'
+$hostDirs = @(if (Test-Path $hostsDir) { Get-ChildItem $hostsDir -Directory | Sort-Object Name })
+if ($onlyHost -and -not ($hostDirs | Where-Object { $_.Name -eq $onlyHost })) {
+    throw "Host not found: $hostsDir\$onlyHost"
+}
+if ($hostDirs) { Write-Host "Multi-host case: $(($hostDirs | ForEach-Object Name) -join ', ')" -ForegroundColor Cyan }
 
 
 switch ($cmd) {

@@ -875,7 +875,10 @@ class Normalizer:
         .txt / .csv files: one hash per line, optionally followed by ; or , and a label.
         The file name gives the nature of the list: known_bad*, known_good* (e.g. NSRL extract)."""
         out = []
-        for d in (LOCAL_DIR / "hashsets", self.case / "hashsets"):
+        dirs = [LOCAL_DIR / "hashsets", self.case / "hashsets"]
+        if self.case.parent.name.lower() == "hosts":          # host of a multi-host case: lists of the whole case too
+            dirs.append(self.case.parent.parent / "hashsets")
+        for d in dirs:
             if d.is_dir():
                 out += sorted(p for p in d.iterdir() if p.suffix.lower() in (".txt", ".csv") and p.is_file()
                               and not p.stem.lower().startswith(("lisezmoi", "readme")))
