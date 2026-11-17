@@ -170,7 +170,9 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze   C:\Sleuthline\cases\test04   # 3
     │                    normalize_map.json   outputs -> timeline mappings
     │                    parser_registry.json artifact -> validated parsing tool (and registry keys: registry_keys)
     │                    recmd\Sleuthline_Complement.reb   RECmd batch complementing the Kroll batch
-    │                    llm_config.json      model profiles (active profile: claude) and report language
+    │                    llm_config.json      model profiles (active profile: claude), report language, report cover
+    │                    report_template.docx Word template of the report (cover, header, footer, fonts, styles)
+    │                    report_example.json  example of local\report.json (company name, logo, investigator)
     │                    api_keys_template.txt     template of api_keys.txt (the real file is never versioned)
     │                    guidance_template.txt     template of the questions / IOCs file of a case
     └── docs\            POLICY_parsers.md    rule "existing tool before custom parser"
@@ -227,7 +229,7 @@ What is installed:
 │   ├── _help\              online help of each installed tool (syntax reference)
 │   └── tools-manifest.json ← version, URL and SHA-256 of each tool
 ├── pipeline\               deployed copy of <repository>\pipeline (do not edit here) + VERSION.json
-│   └── local\              proposals and hash lists (never overwritten)
+│   └── local\              proposals, hash lists, report.json and report images (never overwritten)
 ├── rules\sigma\            SigmaHQ rules
 ├── venvs\                  one Python environment per tool + orchestrator
 ├── cases\                  analysis folders
@@ -563,11 +565,38 @@ An interrupted analysis (network error, Ctrl+C) resumes where it stopped: run th
 
 **Deliverables** (in `<case>\analysis\`):
 
-- `report_<case>_<date>.docx`: full incident response report: executive summary and verdict; scope, tools and versions; methodology and limitations; incident timeline; detailed findings with, for each piece of evidence, UTC timestamp, artifact, detail, reference and original path; IOCs, MITRE ATT&CK mapping, answers to the questions, recommendations; appendices (steps, detections, notes, coverage, traceability with SHA-256).
+- `report_<case>_<date>.docx`: incident response report built on `config\report_template.docx`: cover page, contents, about this report; introduction (purpose, sources analysed, limitations); executive summary with the verdict and the main findings; incident overview (attack timeline, MITRE ATT&CK techniques, affected systems and accounts, IOCs); technical analysis with, for each finding, the observed facts, the analysis and every piece of evidence (UTC timestamp, artifact, detail, reference and original path); conclusions (answers to the questions); recommendations; appendices (findings by severity, analysis steps, guidance, collection and processing, evidence timeline, detections, notes, coverage, traceability with SHA-256).
 - `key_timeline.csv`, `iocs.csv`, `incident_timeline.csv` (every event of the incident window).
 - `findings.json` (analysis state) and `transcript.jsonl` (full trace).
 
-After opening the report in Word, update the table of contents (F9).
+When the report is opened, Word offers to update the fields: answer Yes to fill in the page numbers of the table of contents.
+
+#### Customizing the report (company name, logo, investigator)
+
+By default the report carries no branding: "Prepared by Sleuthline", a plain navy cover and no logo. To put your own company on it, create `C:\Sleuthline\pipeline\local\report.json`. The `local\` folder is never overwritten by an update, so your settings and images stay there:
+
+```powershell
+Copy-Item C:\Sleuthline\pipeline\config\report_example.json C:\Sleuthline\pipeline\local\report.json
+notepad C:\Sleuthline\pipeline\local\report.json
+```
+
+Put the images in the same folder, for example `C:\Sleuthline\pipeline\local\logo.png` and `C:\Sleuthline\pipeline\local\cover.png`.
+
+| Key | Where it appears | Default (empty value) |
+|---|---|---|
+| `logo` | Header of every page, at the left (PNG or JPG, wide format, shown 0.7 cm high) | no logo |
+| `cover_image` | Background of the cover page (A4 portrait, 1240 x 1754 px; keep the left side dark, the text is written in light colours over it) | plain navy cover |
+| `prepared_by` | Cover page ("Prepared by") and *About this report* | `Sleuthline` |
+| `footer` | Footer of every page, at the left | `<prepared_by> · Confidential` |
+| `client` | Cover page and header | `Case <case name>` |
+| `prepared_for` | Cover page and *About this report* | line hidden |
+| `title`, `subtitle` | Cover page | `Forensic analysis` + host; first sentence of the verdict |
+| `classification` | Cover page and header (e.g. `TLP:AMBER`, `TLP:RED`) | `TLP:AMBER` |
+| `version` | Cover page | `1.0` |
+| `investigator` | *Lead investigator* table: `name`, `role`, `contact` | table hidden |
+| `about_title`, `about`, `about_footer` | *About* block of *About this report* | block hidden |
+
+Image paths are relative to `local\` (or absolute). Only the keys you set are taken; the others keep their defaults from the `report` section of `config\llm_config.json`. To apply a change to a report already generated, run `sleuthline.ps1 report <case>` (no model call). Keep `local\report.json` and your images out of the repository: they are specific to your VM.
 
 ## Reproducibility and versions
 

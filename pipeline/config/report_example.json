@@ -1,0 +1,15 @@
+{
+ "_doc": "Copy this file to <root>\\pipeline\\local\\report.json and fill it in: cover page, header and footer of the Word report. local\\ is never overwritten by an update. Images: path relative to local\\ (or absolute). Empty value = default.",
+ "logo": "logo.png",
+ "cover_image": "cover.png",
+ "client": "",
+ "prepared_for": "",
+ "prepared_by": "Example Security SRL",
+ "classification": "TLP:AMBER",
+ "version": "1.0",
+ "footer": "Example Security SRL · Confidential",
+ "investigator": {"name": "Jane Doe", "role": "Senior Incident Responder", "contact": "ir@example.com"},
+ "about_title": "About Example Security",
+ "about": "Example Security SRL is a cybersecurity firm specialising in incident response and digital forensics.",
+ "about_footer": "example.com"
+}

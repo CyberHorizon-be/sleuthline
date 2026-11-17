@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **New Word report layout.** The report is built on `config\report_template.docx`: cover page, contents, header with TLP, footer with page X of Y, numbered sections on new pages, navy tables with zebra rows, call-out boxes. New structure: about this report; introduction (purpose, sources analysed, limitations); executive summary (in brief, verdict, main findings); incident overview (attack timeline, MITRE ATT&CK techniques with their tactic, affected systems and accounts, IOCs); technical analysis per finding with its evidence; conclusions; recommendations; appendices. The model's Markdown (bold, bullets, numbered lists, code, tables) is rendered instead of shown raw.
+- New `report` section in `llm_config.json`: title, client, subtitle, prepared for / by, classification, version, footer, lead investigator, "About" block, and logo and cover image. Your own values go in `<root>\pipeline\local\report.json` (never overwritten by an update; example in `config\report_example.json`), images in the same folder. README: *Customizing the report*. The table of contents is refreshed by Word when the report is opened.
+
 ## 1.0.0 (2026-10-25)
 
 First stable release: KAPE collection, memory image and network captures analyzed together, from the collection to an evidence-backed report.

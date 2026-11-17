@@ -491,7 +491,16 @@ class TestAgentEndToEnd(unittest.TestCase):
             self.assertIn("independent source", lowered["result"])
             self.assertEqual(len(st["iocs"]), 1)
             self.assertEqual(st["steps"]["1"]["status"], analyze.DONE)
-            self.assertTrue(list((case / "analysis").glob("report_*.docx")))
+            rep = list((case / "analysis").glob("report_*.docx"))
+            self.assertTrue(rep)
+            # report built on the template: cover filled in, numbered sections, no placeholder left
+            import zipfile
+            with zipfile.ZipFile(rep[0]) as z:
+                xml = "".join(z.read(n).decode("utf-8") for n in z.namelist() if n.startswith("word/") and n.endswith(".xml"))
+            self.assertNotIn("{{", xml)
+            for text in ("INCIDENT RESPONSE REPORT", "2. Executive summary", "Appendix A. Findings by severity",
+                         "Execution of EVIL.EXE", "prefetch/p.csv#1"):
+                self.assertIn(text, xml)
             self.assertTrue((case / "analysis" / "key_timeline.csv").exists())
             refused = [json.loads(l) for l in (case / "analysis" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertTrue(any(str(r.get("result", "")).startswith("REFUSED") for r in refused))
@@ -502,6 +511,24 @@ class TestAgentEndToEnd(unittest.TestCase):
             self.assertEqual(len(st["findings"]), 2)
             self.assertEqual(len(st["iocs"]), 1)
             self.assertEqual(len(st["injection_alerts"]), 1)
+
+    def test_report_settings_local_override(self):
+        """local\\report.json overrides the 'report' section of llm_config.json; image paths are relative to local\\."""
+        with tempfile.TemporaryDirectory() as d:
+            old = analyze.LOCAL_DIR
+            analyze.LOCAL_DIR = Path(d)
+            try:
+                cfg = {"report": {"prepared_by": "", "classification": "TLP:AMBER", "logo": ""}}
+                self.assertEqual(analyze.report_settings(cfg)["classification"], "TLP:AMBER")
+                (Path(d) / "report.json").write_text(json.dumps({"_doc": "x", "prepared_by": "ACME", "logo": "logo.png"}),
+                                                     encoding="utf-8")
+                rc = analyze.report_settings(cfg)
+                self.assertEqual(rc["prepared_by"], "ACME")
+                self.assertEqual(rc["classification"], "TLP:AMBER")
+                self.assertEqual(rc["logo"], str(Path(d) / "logo.png"))
+                self.assertNotIn("_doc", rc)
+            finally:
+                analyze.LOCAL_DIR = old
 
     def test_report_language_in_prompt(self):
         agent = analyze.Agent.__new__(analyze.Agent)
