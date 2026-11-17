@@ -15,7 +15,16 @@
 - New `report` section in `llm_config.json`: title, client, subtitle, prepared for / by, classification, version, footer, lead investigator, "About" block, and logo and cover image. Your own values go in `<root>\pipeline\local\report.json` (never overwritten by an update; example in `config\report_example.json`), images in the same folder. README: *Customizing the report*. The table of contents is refreshed by Word when the report is opened.
 - **Several hosts in one case** (design in `docs/design/v1.2.md`). One folder per host in `<case>\hosts\` (each one laid out like a single-host case), captures of the whole case in `<case>\pcap\`. `sleuthline.ps1` runs inventory, parse and normalize for each host (with its own time zone) and for the case-level captures (`--host <name>` for one host only); the new `3_normalize\merge.py` merges them into `<case>\db\case.duckdb`: `host_id` on every common table, references `<host>:<output>#<record>`, raw tables per host (`raw_<host>.*`) and union views `raw.<table>` with `_host`, merge conservation checks, hosts in `meta` and `merge_report.md`. A case without `hosts\` is unchanged.
 - Playbook: `Scope: host` (steps 1-4, 6, 7, 9-11: run once per host, queries limited to it) or `Scope: case` (steps 5, 8, 12-14: once, to link the hosts); rule 11 for multi-host cases. Agent: `hosts()` tool, `host` filter on `search` / `timeline_window`, hosts of each finding / event / IOC computed from its references; evidence policy: the same artifact on two hosts = two sources. Report: systems analysed, sources per host, Host column in the timeline and the main findings, hosts of the case in the affected systems, technical analysis per host.
-- Tests: 62 tests.
+- **Fixes from the code audit of November 2026:**
+  - error messages of the data tools (e.g. a DuckDB conversion error quoting a log line) now reach the model inside the untrusted-evidence block and are scanned for text addressed to an AI, like every other result;
+  - `ActiveTimeBias` read as a signed 32-bit value (east of UTC, e.g. Belgium -60 shown as 4294967236) and from the current control set (`Select\Current`), with a warning when control sets disagree;
+  - list arguments sent as a single string by some models (`exclude_artifacts`, `refs`, `mitre`) are taken as one element, not one per character;
+  - `%` and `_` are literal in `search`, `timeline_window`, `coverage` and the IOC sweep (`svc_host.exe` no longer matches `svcXhost.exe`);
+  - timestamps given by the model with an offset are converted to UTC; an invalid timestamp is refused by `add_timeline_event`;
+  - the tool-call limit applies inside one answer: beyond it, only recording tools run; new limit `max_context_tokens_per_step` (180,000 by default): beyond it, the step records its results and ends;
+  - a 200 answer of the model API that is not JSON is retried instead of stopping the analysis.
+- README: the EZTools bootstrap runs before the lock comparison (supply chain); daylight saving time not handled (one hour off in Europe for the other season).
+- Tests: 68 tests.
 
 ## 1.0.0 (2026-10-25)
 

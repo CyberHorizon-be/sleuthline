@@ -1239,6 +1239,116 @@ class TestMultiHost(unittest.TestCase):
                 self.assertIn(text, xml)
 
 
+
+class TestAuditFixes(unittest.TestCase):
+    """Code audit of November 2026: injection through error messages, tool-call and context limits, list arguments
+    sent as strings, LIKE wildcards, timestamps with an offset, ActiveTimeBias east of UTC, invalid JSON answers."""
+
+    def run_case(self, d, script, limits=None):
+        case = Path(d) / "case"
+        build_synthetic_case(case)
+        (Path(d) / "script.json").write_text(json.dumps(script), encoding="utf-8")
+        cfg = {"active": "mock", "limits": limits or {},
+               "profiles": {"mock": {"provider": "mock", "model": "mock", "script": str(Path(d) / "script.json")}}}
+        (Path(d) / "cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
+        pb = Path(d) / "PLAYBOOK.md"
+        pb.write_text("# P\n\n## Rules\n\n1. Facts.\n\n## Step 1: Execution\n\nLook.\n", encoding="utf-8")
+        self.assertEqual(analyze.main([str(case), "--config", str(Path(d) / "cfg.json"), "--playbook", str(pb),
+                                       "--no-report"]), 0)
+        st = json.loads((case / "analysis" / "findings.json").read_text(encoding="utf-8"))
+        tr = [json.loads(l) for l in (case / "analysis" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
+        return st, [r for r in tr if r.get("kind") == "tool"]
+
+    def test_errors_wrapped_lists_and_timestamps(self):
+        with tempfile.TemporaryDirectory() as d:
+            st, tools = self.run_case(d, [{"tool_calls": [
+                # the 4104 payload is quoted by DuckDB in the conversion error: it must arrive wrapped and flagged
+                {"name": "sql_query", "args": {"sql": "SELECT CAST(Payload AS INTEGER) FROM raw.evtx WHERE EventId = '4104'"}},
+                {"name": "timeline_window", "args": {"start": "2023-11-10 11:00:00", "end": "2023-11-10 12:00:00",
+                                                     "exclude_artifacts": "Prefetch"}},
+                {"name": "add_timeline_event", "args": {"ts": "yesterday", "title": "x", "description": "x",
+                                                        "refs": ["prefetch/p.csv#1"]}},
+                {"name": "add_timeline_event", "args": {"ts": "2023-11-10T12:03:09+01:00", "title": "EVIL.EXE run",
+                                                        "description": "x", "refs": "prefetch/p.csv#1"}},
+                {"name": "step_complete", "args": {"summary": "done"}}]}])
+            err = tools[0]["result"]
+            self.assertTrue(err.startswith("<untrusted_evidence"), err[:80])
+            self.assertIn("SQL ERROR", err)
+            self.assertIn("[Sleuthline guard]", err)
+            self.assertTrue(st["injection_alerts"])
+            win = tools[1]["result"]
+            self.assertIn("evtx/e.csv#1", win)                         # "Prefetch" excluded as one string, not letter by letter
+            self.assertNotIn("prefetch/p.csv#1", win)
+            self.assertTrue(tools[2]["result"].startswith("REFUSED: not a timestamp"))
+            self.assertEqual(st["timeline_events"][0]["ts"], "2023-11-10 11:03:09")   # +01:00 converted to UTC; refs as a string
+
+    def test_tool_call_limit_inside_one_answer(self):
+        with tempfile.TemporaryDirectory() as d:
+            q = {"name": "sql_query", "args": {"sql": "SELECT 1"}}
+            st, tools = self.run_case(d, [{"tool_calls": [q, q, q, q,
+                {"name": "add_finding", "args": {"title": "EVIL.EXE", "severity": "low", "confidence": "confirmed",
+                                                 "description": "x", "refs": ["prefetch/p.csv#1"]}},
+                {"name": "step_complete", "args": {"summary": "done"}}]}], limits={"max_tool_calls_per_step": 2})
+            self.assertEqual([t["result"].startswith("<untrusted_evidence") and "not run" not in t["result"] for t in tools[:4]],
+                             [True, True, False, False])
+            self.assertIn("tool call limit", tools[2]["result"])
+            self.assertEqual(len(st["findings"]), 1)                    # recording is still possible
+            self.assertEqual(st["steps"]["1"]["status"], analyze.DONE)
+
+    def test_context_limit(self):
+        with tempfile.TemporaryDirectory() as d:
+            q = {"name": "sql_query", "args": {"sql": "SELECT 1"}}
+            st, tools = self.run_case(d, [{"tool_calls": [q]}, {"tool_calls": [q, {"name": "step_complete", "args": {"summary": "x"}}]}],
+                                      limits={"max_context_tokens_per_step": 100})
+            self.assertNotIn("not run", tools[0]["result"])              # the answer that crossed the limit still runs
+            self.assertIn("context limit", tools[1]["result"])
+            self.assertEqual(st["steps"]["1"]["summary"], "x")
+
+    def test_like_escape(self):
+        con = duckdb.connect()
+        rows = con.execute("SELECT v FROM (VALUES ('svc_host.exe'), ('svcXhost.exe'), ('100%.txt'), ('1000.txt')) t(v) "
+                           "WHERE v ILIKE ?" + analyze.LIKE_ESCAPE + " OR v ILIKE ?" + analyze.LIKE_ESCAPE + " ORDER BY v",
+                           [analyze.like("SVC_host"), analyze.like("100%")]).fetchall()
+        self.assertEqual([r[0] for r in rows], ["100%.txt", "svc_host.exe"])
+        self.assertEqual(analyze.as_list("a"), ["a"])
+        self.assertEqual(analyze.norm_ts("2020-09-19 03:40:49.4103201Z", strict=True), "2020-09-19 03:40:49.410320")
+
+    def test_active_time_bias_east_of_utc(self):
+        self.assertEqual(normalize.Normalizer.dword_signed("4294967236"), -60)       # Belgium (winter), unsigned display
+        self.assertEqual(normalize.Normalizer.dword_signed("0xFFFFFF88"), -120)
+        self.assertEqual(normalize.Normalizer.dword_signed("420"), 420)
+        self.assertIsNone(normalize.Normalizer.dword_signed("n/a"))
+        con = duckdb.connect()
+        con.execute("CREATE SCHEMA raw")
+        con.execute("""CREATE TABLE raw.registry_kroll AS SELECT * FROM (VALUES
+            ('ROOT\\ControlSet001\\Control\\TimeZoneInformation', 'ActiveTimeBias', '4294967176'),
+            ('ROOT\\ControlSet002\\Control\\TimeZoneInformation', 'ActiveTimeBias', '4294967236'),
+            ('ROOT\\Select', 'Current', '2')) t(KeyPath, ValueName, ValueData)""")
+        from types import SimpleNamespace
+        obj = SimpleNamespace(tables={"registry_kroll": {}}, report={"warnings": []}, tz_bias=None,
+                              dword_signed=normalize.Normalizer.dword_signed)
+        normalize.Normalizer.detect_tz_bias(obj, con)
+        self.assertEqual(obj.tz_bias, -60)                           # ControlSet002 = current, not the first row
+        self.assertIn("ControlSet002 (current control set)", obj.report["warnings"][0])
+        self.assertIn("-120", obj.report["warnings"][0])
+
+    def test_invalid_json_answer_retried(self):
+        import urllib.request
+        bodies = [b"<html>proxy error</html>", b'{"ok": true}']
+
+        class Resp:
+            def __init__(self, b): self.b = b
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return self.b
+        old_open, old_sleep = urllib.request.urlopen, llm.time.sleep
+        urllib.request.urlopen, llm.time.sleep = (lambda req, timeout=None: Resp(bodies.pop(0))), (lambda s: None)
+        try:
+            self.assertEqual(llm._http_json("https://x/v1/messages", {}, {}, 10), {"ok": True})
+        finally:
+            urllib.request.urlopen, llm.time.sleep = old_open, old_sleep
+
+
 def snapshot(db: Path) -> dict:
     con = duckdb.connect(str(db), read_only=True)
     try:

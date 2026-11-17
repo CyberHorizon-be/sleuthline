@@ -58,7 +58,12 @@ GUIDANCE_TEMPLATE = CONFIG_DIR / "guidance_template.txt"
 CONFIG = CONFIG_DIR / "llm_config.json"
 KEYS_FILE = CONFIG_DIR / "api_keys.txt"
 DEFAULT_LIMITS = {"max_tool_calls_per_step": 40, "max_result_chars": 15000, "max_rows": 200,
-                  "keep_full_results": 12, "query_timeout_s": 120, "max_billed_tokens_per_run": 0}
+                  "keep_full_results": 12, "query_timeout_s": 120, "max_billed_tokens_per_run": 0,
+                  "max_context_tokens_per_step": 180000}
+# After the tool-call limit or the context limit of a step, only these tools still run (record, then end the step)
+RECORD_TOOLS = {"add_finding", "add_evidence", "add_timeline_event", "add_ioc", "answer_question", "note", "set_summary",
+                "set_recommendations", "step_complete"}
+LIKE_ESCAPE = " ESCAPE '\\'"
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 CONFIDENCES = ["confirmed", "probable", "possible"]
 UNDETERMINED = "undetermined"
@@ -675,11 +680,35 @@ TOOLS = [
 ]
 
 
-def norm_ts(s: str | None) -> str | None:
+def norm_ts(s: str | None, strict: bool = False) -> str | None:
+    """UTC timestamp 'YYYY-MM-DD HH:MM:SS[.ffffff]'. An explicit offset (+02:00, Z) is converted to UTC.
+    strict: raises ValueError on a value that is not a date (otherwise it is passed through, trimmed)."""
     if not s:
         return None
-    s = str(s).strip().replace("T", " ").rstrip("Z")
-    return s[:26]
+    raw = str(s).strip()
+    try:
+        # 7-digit fractions (EZTools) and a trailing Z are accepted by every Python version this way
+        d = dt.datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", re.sub(r"(?i)z$", "+00:00", raw)))
+    except ValueError:
+        if strict:
+            raise ValueError(f"not a timestamp: {raw!r} (expected YYYY-MM-DD HH:MM:SS, in UTC)") from None
+        return raw.replace("T", " ").rstrip("Z")[:26]
+    if d.tzinfo is not None:
+        d = d.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return d.isoformat(sep=" ")
+
+
+def like(value) -> str:
+    """ILIKE pattern 'contains value', with % and _ taken literally (use with LIKE_ESCAPE)."""
+    v = str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{v}%"
+
+
+def as_list(x) -> list:
+    """A list argument sent as a single string by some models (local models): one element, not one per character."""
+    if x is None:
+        return []
+    return [x] if isinstance(x, str) else list(x)
 
 
 class Agent:
@@ -705,7 +734,8 @@ class Agent:
         return sorted({e["host"] for e in evidence if e.get("host")}) if self.db.multi else []
 
     def resolve_all(self, refs):
-        if not isinstance(refs, list) or not refs:
+        refs = [r for r in as_list(refs) if str(r).strip()]
+        if not refs:
             return None, "at least one evidence reference (refs) is required"
         resolved, missing = [], []
         for r in refs[:50]:
@@ -743,8 +773,8 @@ class Agent:
                 where.append(f"{col} = ?")
                 params.append(val)
         if contains:
-            where.append("artifact ILIKE ?")
-            params.append(f"%{contains}%")
+            where.append("artifact ILIKE ?" + LIKE_ESCAPE)
+            params.append(like(contains))
         sql = ("SELECT artifact, source, status, tool, rows, detail FROM coverage"
                + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY source, status, artifact")
         cols, rows = self.db.run(sql, params, max_rows=300)
@@ -784,14 +814,14 @@ class Agent:
 
     def t_search(self, text, start=None, end=None, artifact_like=None, limit=100, host=None):
         limit = min(int(limit or 100), 500)
-        cond, params = ["(path ILIKE ? OR description ILIKE ? OR user_name ILIKE ?)"], [f"%{text}%"] * 3
+        cond, params = [f"(path ILIKE ?{LIKE_ESCAPE} OR description ILIKE ?{LIKE_ESCAPE} OR user_name ILIKE ?{LIKE_ESCAPE})"], [like(text)] * 3
         self.host_filter(host, cond, params)
         if start:
             cond.append("ts >= ?"); params.append(norm_ts(start))
         if end:
             cond.append("ts <= ?"); params.append(norm_ts(end))
         if artifact_like:
-            cond.append("artifact ILIKE ?"); params.append(f"%{artifact_like}%")
+            cond.append("artifact ILIKE ?" + LIKE_ESCAPE); params.append(like(artifact_like))
         cols, rows = self.db.run(f"SELECT {self.cols_out()} FROM timeline_all WHERE "
                                  + " AND ".join(cond) + f" ORDER BY ts LIMIT {limit + 1}", params, limit + 1)
         n = self.db.run("SELECT count(*) FROM timeline_all WHERE " + " AND ".join(cond), params, 1)[1][0][0]
@@ -802,11 +832,12 @@ class Agent:
         cond, params = ["ts BETWEEN ? AND ?"], [norm_ts(start), norm_ts(end)]
         self.host_filter(host, cond, params)
         if contains:
-            cond.append("(path ILIKE ? OR description ILIKE ?)"); params += [f"%{contains}%"] * 2
+            cond.append(f"(path ILIKE ?{LIKE_ESCAPE} OR description ILIKE ?{LIKE_ESCAPE})"); params += [like(contains)] * 2
         if category:
-            cond.append("category ILIKE ?"); params.append(f"%{category}%")
-        for x in exclude_artifacts or []:
-            cond.append("artifact NOT ILIKE ?"); params.append(f"%{x}%")
+            cond.append("category ILIKE ?" + LIKE_ESCAPE); params.append(like(category))
+        for x in as_list(exclude_artifacts):
+            if str(x).strip():
+                cond.append("artifact NOT ILIKE ?" + LIKE_ESCAPE); params.append(like(x))
         where = " AND ".join(cond)
         n = self.db.run(f"SELECT count(*) FROM timeline_all WHERE {where}", params, 1)[1][0][0]
         cols, rows = self.db.run(f"SELECT {self.cols_out()} FROM timeline_all WHERE {where} "
@@ -815,7 +846,7 @@ class Agent:
         return format_table(cols, rows, self.limits["max_result_chars"], footer=f"({n} event(s) in the window, {len(rows)} shown{hint})")
 
     def t_get_evidence(self, refs):
-        return self.db.get_evidence_text(refs if isinstance(refs, list) else [refs])
+        return self.db.get_evidence_text(as_list(refs))
 
     def t_add_finding(self, title, severity, confidence, description, refs, category="", mitre=None, analysis=""):
         if severity not in SEVERITIES:
@@ -826,7 +857,7 @@ class Agent:
         if err:
             return "REFUSED: " + err
         f = {"id": self.state.next_id("F", "findings"), "step": self.current_step, "title": title, "severity": severity,
-             "confidence_declared": confidence, "category": category, "mitre": mitre or [], "description": description,
+             "confidence_declared": confidence, "category": category, "mitre": as_list(mitre), "description": description,
              "analysis": analysis, "evidence": ev, "created": now_utc()}
         if self.db.multi:
             f["hosts"] = self.hosts_of(ev)
@@ -866,11 +897,17 @@ class Agent:
         return f"OK: {len(added)} reference(s) added to {f['id']}, confidence {f['confidence']}." + msg
 
     def t_add_timeline_event(self, ts, title, description, refs, phase="", mitre=None):
+        try:
+            ts = norm_ts(ts, strict=True)
+        except ValueError as e:
+            return f"REFUSED: {e}"
+        if not ts:
+            return "REFUSED: ts is required (YYYY-MM-DD HH:MM:SS, UTC)"
         ev, err = self.resolve_all(refs)
         if err:
             return "REFUSED: " + err
-        e = {"id": self.state.next_id("T", "timeline_events"), "step": self.current_step, "ts": norm_ts(ts), "title": title,
-             "phase": phase, "mitre": mitre or [], "description": description, "evidence": ev}
+        e = {"id": self.state.next_id("T", "timeline_events"), "step": self.current_step, "ts": ts, "title": title,
+             "phase": phase, "mitre": as_list(mitre), "description": description, "evidence": ev}
         if self.db.multi:
             e["hosts"] = self.hosts_of(ev)
         self.state.d["timeline_events"].append(e)
@@ -947,19 +984,20 @@ class Agent:
         for ioc in iocs:
             v = ioc["value"]
             hits = []
-            n_tl = self.db.run("SELECT count(*) FROM timeline_all WHERE path ILIKE ? OR description ILIKE ?", [f"%{v}%"] * 2, 1)[1][0][0]
-            sample = self.db.run("SELECT ts, artifact, ref FROM timeline_all WHERE path ILIKE ? OR description ILIKE ? ORDER BY ts LIMIT 15",
-                                 [f"%{v}%"] * 2, 15)[1]
+            tl_cond = f"path ILIKE ?{LIKE_ESCAPE} OR description ILIKE ?{LIKE_ESCAPE}"
+            n_tl = self.db.run(f"SELECT count(*) FROM timeline_all WHERE {tl_cond}", [like(v)] * 2, 1)[1][0][0]
+            sample = self.db.run(f"SELECT ts, artifact, ref FROM timeline_all WHERE {tl_cond} ORDER BY ts LIMIT 15",
+                                 [like(v)] * 2, 15)[1]
             for t in sorted(self.db.raw_tables):
                 cols = [r[0] for r in self.db.run(f'DESCRIBE raw."{t}"', max_rows=500)[1] if not r[0].startswith("_")]
                 if not cols:
                     continue
-                cond = " OR ".join(f'"{c}" ILIKE ?' for c in cols)
+                cond = " OR ".join(f'"{c}" ILIKE ?{LIKE_ESCAPE}' for c in cols)
                 try:
-                    c = self.db.run(f'SELECT count(*) FROM raw."{t}" WHERE {cond}', [f"%{v}%"] * len(cols), 1)[1][0][0]
+                    c = self.db.run(f'SELECT count(*) FROM raw."{t}" WHERE {cond}', [like(v)] * len(cols), 1)[1][0][0]
                     if c:
                         refs = [r[0] for r in self.db.run(f"SELECT _src_file || '#' || _src_row FROM raw.\"{t}\" WHERE {cond} LIMIT 5",
-                                                          [f"%{v}%"] * len(cols), 5)[1]]
+                                                          [like(v)] * len(cols), 5)[1]]
                         hits.append({"table": f"raw.{t}", "count": c, "refs": refs})
                 except duckdb.Error:
                     continue
@@ -1074,6 +1112,9 @@ Instructions: explore the database with the tools, pivot, corroborate. Record ea
                 raise LLMError(f"run budget reached ({num(self.run_billed)} input-equivalent tokens > "
                                f"limits.max_billed_tokens_per_run = {num(budget)}): run again to continue, or raise the limit")
             messages.append({"role": "assistant", "content": rep.text, "tool_calls": rep.tool_calls, "raw": rep.raw})
+            context = rep.input_tokens + rep.cache_read_tokens + rep.cache_write_tokens
+            ctx_limit = int(self.limits.get("max_context_tokens_per_step") or 0)
+            ctx_full = bool(ctx_limit and context >= ctx_limit)
             if not rep.tool_calls:
                 nudges += 1
                 if nudges > 3:
@@ -1083,26 +1124,38 @@ Instructions: explore the database with the tools, pivot, corroborate. Record ea
                     break
                 messages.append({"role": "user", "content": f"Continue with the tools. Finish with {final_tool}."})
                 continue
+            limit = self.limits["max_tool_calls_per_step"]
             for tc in rep.tool_calls:
                 calls += 1
-                if tc["name"] != "step_complete":
-                    self.log(f"    [{calls:>2}] {tc['name']} {self.short_args(tc)}")
-                result = self.dispatch(tc["name"], tc.get("args") or {})
+                if (forced or calls > limit) and tc["name"] not in RECORD_TOOLS | {final_tool}:
+                    # Limit reached (calls, or context): exploration stops, recording is still possible.
+                    # Every call still gets a result (required by the APIs), without running the tool.
+                    result = (f"ERROR: not run: {'context' if ctx_full else 'tool call'} limit of this step reached. "
+                              f"Record what is established, then call {final_tool}.")
+                else:
+                    if tc["name"] != "step_complete":
+                        self.log(f"    [{calls:>2}] {tc['name']} {self.short_args(tc)}")
+                    result = self.dispatch(tc["name"], tc.get("args") or {})
                 if result.startswith(("REFUSED", "ERROR", "SQL ERROR")):
                     self.log(f"         -> {result[:160]}")
-                elif tc["name"] in DATA_TOOLS:
+                if tc["name"] in DATA_TOOLS:
+                    # Case data, errors included: a DuckDB error message quotes the value it could not convert
                     result = self.guard_result(tc, result)
                 self.trace("tool", name=tc["name"], args=tc.get("args"), result=result[:20000])
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "name": tc["name"], "content": result})
             if self.step_done is not None:
                 break
-            if calls >= self.limits["max_tool_calls_per_step"]:
+            if calls >= limit or ctx_full:
                 if forced:
-                    self.step_done = {"summary": "(call limit reached)", "gaps": "tool call limit reached"}
+                    why = "tool call limit reached" if calls >= limit else f"context limit reached ({num(context)} tokens)"
+                    self.step_done = {"summary": f"({why})", "gaps": why}
                     break
                 forced = True
-                messages.append({"role": "user", "content": "Tool call limit reached for this step: record what is established "
-                                                            f"then call {final_tool} immediately."})
+                if ctx_full and calls < limit:
+                    self.log(f"    context of the step: {num(context)} tokens >= limits.max_context_tokens_per_step: end of the step")
+                messages.append({"role": "user", "content": ("Context limit reached for this step" if ctx_full and calls < limit
+                                                             else "Tool call limit reached for this step")
+                                 + f": record what is established then call {final_tool} immediately."})
         return usage, calls, time.time() - t0
 
     def guard_result(self, tc: dict, result: str) -> str:

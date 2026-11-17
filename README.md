@@ -77,7 +77,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 62 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 68 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -269,7 +269,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (62 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (68 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```
@@ -527,7 +527,7 @@ The database is fully rebuilt at each run (written to a temporary file, then rep
 - Paths of the copy (`<root>\cases\<case>\C\...`, working copies `...\_work\C\...`) are mapped back to the original path (`C:\...`).
 - Timestamps outside [1980, today + 1 year] stay in the raw tables but not in the timeline; they are counted in the report.
 - Expiry and scheduling dates (`expiration_time`, `start_boundary`, ...) are not events: they are excluded.
-- Local-time sources (setupapi.dev.log, KnownNetworks, Panther logs) are converted to UTC with the `ActiveTimeBias` read from the SYSTEM hive. A daylight saving change during the period is not taken into account; this is stated in the report.
+- Local-time sources (setupapi.dev.log, KnownNetworks, Panther logs) are converted to UTC with the `ActiveTimeBias` read from the SYSTEM hive, in the current control set (`Select\Current`), as a signed value (negative east of UTC, e.g. -60 for Belgium in winter, even when RECmd shows it unsigned). A daylight saving change during the period is not taken into account: in Europe, a local-time event of the other season is one hour off. This is stated in the report.
 - Excluded from the timeline but kept as raw tables: `SourceAccessed` dates (modified by the collection), ActivitiesCache as seen by SQLECmd (converted to the analysis machine's local time: WxTCmd and Dissect are used instead), internal structures of `$LogFile`.
 
 **Mappings** are described in `pipeline\config\normalize_map.json` (first match wins): `glob` (outputs concerned), `times` (date columns and their meaning), `path`, `description`, `user`, `host`, `evidence` (DuckDB SQL expression or list of columns), `detection` (mapping of an alert output), `local_time`, `note`. For Dissect, date columns are read directly from the `recorddescriptor` lines.
@@ -625,6 +625,7 @@ Image paths are relative to `local\` (or absolute). Only the keys you set are ta
   - Python packages (Dissect, plaso, orchestrator...): exact versions (`pip freeze`);
   - rule updates (`hayabusa update-rules`, `zircolite -U`, `--sync` of EZTools and KAPE) not run;
   - EZTools and rule folders can only be downloaded in their latest version, so they are **compared** with the lock at the end of the installation (`lock_check` of the manifest). For an exact reproduction of these, archive `<root>\tools` with the lock.
+  - Supply chain: the EZTools bootstrap script (`Get-ZimmermanTools.ps1`, from ericzimmermanstools.com over HTTPS) is run before that comparison, in every mode, because it is only published in its latest version. Outside `-Locked`, every tool is taken in its latest version without a reference hash. For an analysis meant to be produced, install with `-Locked` from a lock you exported yourself, or restore an archive of `<root>\tools`.
 - **Manifest.** `tools-manifest.json` also records every downloaded URL and its SHA-256, the commit of source repositories and the file version of each EZTools executable.
 
 ## Tests
