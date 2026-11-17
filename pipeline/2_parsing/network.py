@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -136,6 +137,12 @@ def write_config(default_yaml: Path, out_yaml: Path, rules_file: Path | None, in
             f = find_config_file(install_dir, name)
             if f:
                 cfg[key] = str(f)
+            elif key == "threshold-file":
+                # not shipped with the Windows MSI: an empty file avoids Suricata's warning (no thresholding)
+                empty = out_yaml.parent / "threshold.config"
+                empty.write_text("# empty: no alert thresholding (file not shipped with this Suricata build)\n",
+                                 encoding="utf-8")
+                cfg[key] = str(empty)
             else:
                 cfg.pop(key, None)
     out_yaml.write_text("%YAML 1.1\n---\n" + yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
@@ -209,7 +216,25 @@ def run_capture(cmd: list[str], log_dir: Path, out_dir: Path, capture_name: str,
     if not eve.is_file():
         raise RuntimeError(f"Suricata produced no eve.jsonl: {text.strip()[-500:]}")
     counts = split_eve(eve, out_dir, capture_name)
-    return text + "\nEvents: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) + "\n"
+    return text + rules_summary(log_dir / "suricata.log") + "\nEvents: " + ", ".join(
+        f"{k}={v}" for k, v in sorted(counts.items())) + "\n"
+
+
+def rules_summary(log: Path) -> str:
+    """'52825 rules successfully loaded, 9 rules failed' from suricata.log, with the keywords the build
+    does not support (e.g. file.magic in the Windows build): the alerts of those rules cannot fire."""
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    m = re.search(r"(\d+) rules successfully loaded, (\d+) rules failed", text)
+    if not m:
+        return ""
+    out = f"\nRules: {m.group(1)} loaded, {m.group(2)} failed"
+    kw = sorted(set(re.findall(r"unknown rule keyword '([^']+)'", text)))
+    if int(m.group(2)) and kw:
+        out += f" (keywords not supported by this Suricata build: {', '.join(kw)})"
+    return out + "\n"
 
 
 # --------------------------------------------------------------------------
