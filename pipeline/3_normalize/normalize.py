@@ -42,6 +42,7 @@ import os
 import re
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 try:
@@ -402,6 +403,37 @@ SELECT * FROM read_json({lit(str(path))}, format={lit(fmt)}, maximum_depth=1, sa
     return 0
 
 
+def count_records(path: Path, kind: str, fmt: str, opts: dict) -> int:
+    """Records of an output file counted independently of DuckDB (conservation check): CSV records
+    without the header and without blank rows; JSON lines (Dissect: without the recorddescriptor lines);
+    elements of a JSON array."""
+    if kind == "csv":
+        import csv
+        csv.field_size_limit(1 << 30)
+        delim = opts.get("delim") or sniff_delim(first_line(path))
+        quote = opts.get("quote", '"')
+        n = -1                                   # header
+        with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as fh:
+            for row in csv.reader(fh, delimiter=delim, quotechar=quote or '"',
+                                  quoting=csv.QUOTE_MINIMAL if quote else csv.QUOTE_NONE):
+                if row and any(c.strip() for c in row):
+                    n += 1
+        return max(n, 0)
+    if kind == "jsonl":
+        n = 0
+        with path.open("rb") as fh:
+            for line in fh:
+                s = line.strip()
+                if not s:
+                    continue
+                if fmt == "dissect" and s.startswith(b'{"_type": "recorddescriptor"'):
+                    continue
+                n += 1
+        return n
+    data = json.loads(path.read_text(encoding="utf-8-sig", errors="replace") or "null")
+    return len(data) if isinstance(data, list) else (0 if data is None else 1)
+
+
 def dissect_descriptors(path: Path) -> dict[str, list[tuple[str, str]]]:
     """Dissect record types and their fields (read from the recorddescriptor lines)."""
     out = {}
@@ -556,6 +588,7 @@ class Normalizer:
             stage = f"_stage_{i}"
             src = f["source"] or {}
             fmt = src.get("format") or ("dissect" if f["job"] == "dissect" else f["kind"])
+            f["format"], f["csv_opts"] = fmt, src.get("csv", {})
             try:
                 if f["kind"] == "csv":
                     f["rejects"], note = stage_csv(con, f["path"], src.get("csv", {}), stage, self.db_path.parent / "_tmp")
@@ -669,7 +702,8 @@ class Normalizer:
     def build_timeline(self, con):
         con.execute("""CREATE TABLE _tl (ts TIMESTAMP, ts_desc VARCHAR, artifact VARCHAR, category VARCHAR, tool VARCHAR,
             host VARCHAR, user_name VARCHAR, path VARCHAR, description VARCHAR, evidence VARCHAR,
-            src_table VARCHAR, src_file VARCHAR, src_row BIGINT, source_id VARCHAR, mapping VARCHAR)""")
+            src_table VARCHAR, src_file VARCHAR, src_row BIGINT, source_id VARCHAR, mapping VARCHAR,
+            ts_original VARCHAR, ts_conversion VARCHAR, ts_tz_detail VARCHAR, ts_confidence VARCHAR, clock_offset_s DOUBLE)""")
         # Amount of work: rows x date columns of each table (for the estimate)
         for table, info in self.tables.items():
             nt = len(self.time_specs(table, info)) if info["source"] else 3
@@ -744,18 +778,27 @@ class Normalizer:
     def insert_timeline(self, con, table, src, cols, times, mapping, files):
         path, desc, user, host, ev, where = self.common_exprs(src, cols, files)
         structs = []
-        shift, suffix = "", ""
-        if src.get("local_time"):
+        shift = ""
+        # Timestamp provenance: raw value, how it was converted to UTC, and how reliable the conversion is
+        if mapping == "auto":
+            conv, detail, conf = "'auto'", "'mapping detected automatically, not validated'", "'low'"
+        elif src.get("local_time"):
             if self.tz_bias is None:
                 raise duckdb.InvalidInputException(
                     "timestamps in local time and time zone of the machine unknown (TimeZoneInformation\\ActiveTimeBias missing)")
             shift = f" + INTERVAL ({int(self.tz_bias)}) MINUTE"
-            suffix = f" [local time converted to UTC, ActiveTimeBias={self.tz_bias} min]"
+            conv = "'local_bias'"
+            detail = lit(f"local time + ActiveTimeBias {self.tz_bias} min (value at collection time; "
+                         "a daylight-saving change during the period is not handled)")
+            conf = "'medium'"
+        else:
+            off = "(regexp_matches(r, '[+-][0-9][0-9]:?[0-9][0-9]$') AND NOT regexp_matches(r, '[+-]00:?00$'))"
+            conv = f"(CASE WHEN {off} THEN 'offset' ELSE 'utc' END)"
+            detail = f"(CASE WHEN {off} THEN 'explicit offset ' || regexp_extract(r, '([+-][0-9][0-9]:?[0-9][0-9])$', 1) END)"
+            conf = "'high'"
         for i, t in enumerate(times):
             d = t.get("desc_sql") or lit(t.get("desc", t["ts"]))
-            if suffix:
-                d = f"{d} || {lit(suffix)}"
-            structs.append(f"{{'v': ts_parse({t['ts']}){shift}, 'd': {d}, 'o': {i}}}")
+            structs.append(f"{{'v': ts_parse({t['ts']}){shift}, 'd': {d}, 'o': {i}, 'r': CAST({t['ts']} AS VARCHAR)}}")
         base = f"""
             SELECT _src_file, _src_row, {host} AS host, {user} AS user_name, {path} AS path,
                    {desc} AS description, {ev} AS evidence, unnest([{', '.join(structs)}]) AS s
@@ -765,12 +808,15 @@ class Normalizer:
         before = con.execute("SELECT count(*) FROM _tl").fetchone()[0]
         con.execute(f"""
             INSERT INTO _tl
-            SELECT s.v, string_agg(s.d, ' ; ' ORDER BY s.o), {lit(src.get('artifact'))}, {lit(src.get('category'))},
-                   {lit(src.get('tool'))}, any_value(host), any_value(user_name), any_value(path),
-                   any_value(description), any_value(evidence), {lit(table)}, _src_file, _src_row,
-                   {lit(src.get('id'))}, {lit(mapping)}
-            FROM ({base}) WHERE s.v IS NOT NULL AND {rng}
-            GROUP BY s.v, _src_file, _src_row""")
+            SELECT v, d, {lit(src.get('artifact'))}, {lit(src.get('category'))}, {lit(src.get('tool'))},
+                   host, user_name, path, description, evidence, {lit(table)}, _src_file, _src_row,
+                   {lit(src.get('id'))}, {lit(mapping)}, r, {conv}, {detail}, {conf}, NULL
+            FROM (SELECT s.v AS v, string_agg(s.d, ' ; ' ORDER BY s.o) AS d, any_value(host) AS host,
+                         any_value(user_name) AS user_name, any_value(path) AS path, any_value(description) AS description,
+                         any_value(evidence) AS evidence, _src_file, _src_row,
+                         string_agg(DISTINCT s.r, ' ; ') AS r
+                  FROM ({base}) WHERE s.v IS NOT NULL AND {rng}
+                  GROUP BY s.v, _src_file, _src_row)""")
         n = con.execute("SELECT count(*) FROM _tl").fetchone()[0] - before
         return n, out
 
@@ -914,7 +960,13 @@ class Normalizer:
             after = None
         if integ and after is not None:
             integ = {**integ, "changed_during_parsing": after.get("changed_during_parsing", [])}
+        try:      # sources of the case (inventory.py, updated by orchestrator.py)
+            sources = json.loads((self.case / "inventory" / "sources.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            sources = None
+        self.sources = sources
         meta = {
+            "sources": json.dumps(sources, ensure_ascii=False) if sources else "unknown (inventory made before 1.1)",
             "pipeline_version": pv.get("label") or "unknown (no VERSION.json: pipeline not deployed by 02_Install-Tools.ps1)",
             "collection_integrity": json.dumps(integ, ensure_ascii=False) if integ else "not checked",
             "case": str(self.case), "normalized_at_utc": started, "normalize_version": VERSION,
@@ -928,6 +980,186 @@ class Normalizer:
         con.execute("CREATE TABLE meta (key VARCHAR, value VARCHAR)")
         con.executemany("INSERT INTO meta VALUES (?, ?)", list(meta.items()))
         return meta
+
+    # -- coverage ----------------------------------------------------------------------
+    def build_coverage(self, con):
+        """Table coverage: for every kind of artifact, what happened to it, computed from the inventory,
+        the parsing jobs and the loaded tables (not left to the agent):
+          not_collected  absent from the case (artifact not in the collection, no memory image, no capture)
+          not_covered    collected, but no installed tool parses it
+          not_parsed     a tool exists but did not produce anything usable (failed, missing, stopped, not run)
+          empty          parsed, zero records
+          analyzed       records in the database"""
+        try:
+            inv = json.loads((self.case / "inventory" / "coverage.json").read_text(encoding="utf-8")).get("artifacts", [])
+        except (OSError, ValueError):
+            inv = []
+        try:
+            run_jobs = json.loads((self.parsed / "run_summary.json").read_text(encoding="utf-8-sig")).get("jobs", [])
+        except (OSError, ValueError):
+            run_jobs = []
+        if not run_jobs:            # parsing older than 1.1 or interrupted: the _status.json files of the jobs
+            run_jobs = [{"job": k, "status": (v or {}).get("status"), "artifacts": (v or {}).get("artifacts") or []}
+                        for k, v in (self.jobs or {}).items()]
+        rows_by_job, files_by_job = defaultdict(int), defaultdict(list)
+        for f in self.files:
+            if f.get("status") in (LOADED, EMPTY):
+                rows_by_job[f["job"]] += int(f.get("rows") or 0)
+                files_by_job[f["job"]].append(f)
+        sources = self.sources or {     # no sources.json (inventory older than 1.1): from what was parsed
+            "disk": {"present": any(a.get("files") for a in inv)},
+            "memory": {"present": "volatility" in files_by_job or any(j["job"] == "volatility" for j in run_jobs)},
+            "network": {"present": "suricata" in files_by_job or any(j["job"] == "suricata" for j in run_jobs)}}
+        disk_present = (sources.get("disk") or {}).get("present")
+        BAD = ("failed", "timeout", "stalled", "tool_missing", "dry_run")
+        out = []
+
+        def job_status(jobs, label):
+            if not jobs:
+                return "not_parsed", None, 0, "no parsing job ran for it"
+            names = ", ".join(sorted({j["job"] for j in jobs}))
+            rows = sum(rows_by_job.get(j["job"], 0) for j in jobs)
+            usable = [j for j in jobs if j.get("status") not in BAD + ("no_input",)]
+            if not usable:
+                return "not_parsed", names, 0, "; ".join(f"{j['job']}: {j.get('status')}" for j in jobs)
+            if rows == 0:
+                return "empty", names, 0, f"{label}: parsed, no record"
+            partial = [j["job"] for j in usable if j.get("status") in ("partial", "warning")]
+            return "analyzed", names, rows, ("incomplete: " + ", ".join(partial)) if partial else ""
+
+        if not disk_present:
+            out.append(("Disk collection (KAPE)", "disk", "not_collected", None, 0, "no KAPE collection in this case"))
+        else:
+            for a in inv:
+                st = a.get("status")
+                if st == "CONTEXT":
+                    continue
+                if st == "ABSENT":
+                    out.append((a.get("label"), "disk", "not_collected", None, 0, "expected, not in the collection"))
+                    continue
+                if st == "NOT COVERED":
+                    out.append((a.get("label"), "disk", "not_covered", None, 0,
+                                "no installed tool parses it (see inventory\\gaps.json)"))
+                    continue
+                jobs = [j for j in run_jobs if a.get("artifact") in (j.get("artifacts") or [])]
+                status, tool, rows, detail = job_status(jobs, a.get("label"))
+                out.append((a.get("label"), "disk", status, tool, rows, detail))
+
+        for kind, job_id, label in (("memory", "volatility", "Memory image"), ("network", "suricata", "Network captures")):
+            if not (sources.get(kind) or {}).get("present"):
+                out.append((label, kind, "not_collected", None, 0, f"no {label.lower()} in this case"))
+                continue
+            job = next((j for j in run_jobs if j.get("job") == job_id), None)
+            if not job or job.get("status") in BAD + ("no_input",):
+                out.append((label, kind, "not_parsed", job_id, 0, f"{job_id}: {job.get('status') if job else 'not run'}"))
+                continue
+            for f in sorted(files_by_job.get(job_id, []), key=lambda f: f["rel"]):
+                n = int(f.get("rows") or 0)
+                out.append((f"{label}: {f.get('table') or f['rel']}", kind, "analyzed" if n else "empty", job_id, n,
+                            f["rel"]))
+        con.execute("""CREATE TABLE coverage (artifact VARCHAR, source VARCHAR, status VARCHAR, tool VARCHAR,
+                       rows BIGINT, detail VARCHAR)""")
+        if out:
+            con.executemany("INSERT INTO coverage VALUES (?,?,?,?,?,?)", out)
+        counts = defaultdict(int)
+        for r in out:
+            counts[r[2]] += 1
+        self.report["coverage"] = dict(counts)
+        return out
+
+    # -- conservation ------------------------------------------------------------------
+    def build_conservation(self, con):
+        """Table conservation: nothing may be lost silently between a tool and the timeline.
+          file_to_raw      records counted in the output file = rows loaded + rows rejected
+          tool_to_output   records announced / written by the tool = records in its outputs (Volatility, Suricata)
+          raw_to_timeline  a mapped table must give timeline rows (0 = date format not understood)"""
+        out = []
+        for f in self.files:
+            st = f.get("status")
+            if st == ERROR:
+                out.append((f["rel"], "file_to_raw", None, 0, "fail", f"cannot be loaded: {f.get('reason')}"))
+                continue
+            if st not in (LOADED, EMPTY) or "kind" not in f or f.get("bytes", 0) == 0:
+                continue
+            try:
+                expected = count_records(f["path"], f["kind"], f.get("format") or f["kind"], f.get("csv_opts") or {})
+            except (OSError, ValueError) as e:
+                out.append((f["rel"], "file_to_raw", None, int(f.get("rows") or 0), "warn", f"not counted: {e}"))
+                continue
+            actual = int(f.get("rows") or 0) + int(f.get("rejects") or 0)
+            note = f"{f.get('rejects')} rejected" if f.get("rejects") else ""
+            out.append((f["rel"], "file_to_raw", expected, actual, "ok" if expected == actual else "fail", note))
+        out += self._tool_conservation()
+        for table, info in sorted(self.tables.items()):
+            tl = info.get("timeline") or {}
+            if not info.get("source"):
+                continue
+            total = sum(int(f.get("rows") or 0) for f in info["files"])
+            if tl.get("status") == "error":
+                out.append((f"raw.{table}", "raw_to_timeline", total, 0, "fail", f"timeline error: {tl.get('error')}"))
+                continue
+            if "rows" not in tl or not total:
+                continue                       # no date mapped for this output, or empty table
+            in_tl = con.execute("SELECT count(*) FROM (SELECT DISTINCT src_file, src_row FROM timeline WHERE src_table = ?)",
+                                [table]).fetchone()[0]
+            outr = int(tl.get("out_of_range") or 0)
+            try:      # rows with at least one non-empty value in a mapped date column
+                cond = " OR ".join(f"coalesce(trim(CAST(({x['ts']}) AS VARCHAR)), '') <> ''"
+                                   for x in self.time_specs(table, info))
+                dated = con.execute(f"SELECT count(*) FROM raw.{q(table)} WHERE {cond}").fetchone()[0] if cond else total
+            except duckdb.Error:
+                dated = total
+            if dated and not in_tl and not outr:
+                status, note = "fail", (f"{dated} row(s) have a value in a date column but none was understood by the "
+                                        "mapping: check the date format")
+            else:
+                status = "ok"
+                note = (f"{total - in_tl} row(s) without a usable date (not in the timeline, still in raw.{table})"
+                        if total > in_tl else "")
+            out.append((f"raw.{table}", "raw_to_timeline", total, in_tl, status, note))
+        con.execute("""CREATE TABLE conservation (src_file VARCHAR, "check" VARCHAR, expected BIGINT, actual BIGINT,
+                       status VARCHAR, note VARCHAR)""")
+        if out:
+            con.executemany("INSERT INTO conservation VALUES (?,?,?,?,?,?)", out)
+        counts = defaultdict(int)
+        for r in out:
+            counts[r[4]] += 1
+        self.report["conservation"] = {"counts": dict(counts),
+                                       "problems": [dict(zip(("src_file", "check", "expected", "actual", "status", "note"), r))
+                                                    for r in out if r[4] != "ok"]}
+        return out
+
+    def _tool_conservation(self):
+        out = []
+        # Volatility: "<n> row(s) -> <plugin>.jsonl" in _run.log = lines of the file
+        run_log = self.parsed / "volatility" / "_run.log"
+        if run_log.is_file():
+            loaded = {f["rel"]: f for f in self.files if f["job"] == "volatility"}
+            for m in re.finditer(r"(?m)^(\d+) row\(s\) -> (\S+\.jsonl)\s*$",
+                                 run_log.read_text(encoding="utf-8", errors="replace")):
+                rel = f"volatility/{m.group(2)}"
+                f = loaded.get(rel)
+                actual = int(f.get("rows") or 0) if f and f.get("status") in (LOADED, EMPTY) else 0
+                exp = int(m.group(1))
+                out.append((rel, "tool_to_output", exp, actual, "ok" if exp == actual else "fail", "Volatility rows written"))
+        # Suricata: lines of raw\eve.jsonl (without the stats events, not loaded) = lines of the split eve_*.jsonl
+        for eve in sorted((self.parsed / "suricata").glob("*/raw/eve.jsonl")) if (self.parsed / "suricata").is_dir() else []:
+            n, stats = 0, 0
+            with eve.open("rb") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    n += 1
+                    if b'"event_type":"stats"' in line or b'"event_type": "stats"' in line:
+                        stats += 1
+            cap_dir = eve.parent.parent
+            split = sum(int(f.get("rows") or 0) for f in self.files
+                        if f["job"] == "suricata" and f.get("status") in (LOADED, EMPTY)
+                        and f["path"].parent == cap_dir)
+            exp = n - stats
+            out.append((rel_of(eve, self.parsed), "tool_to_output", exp, split, "ok" if exp == split else "fail",
+                        f"EVE events without {stats} stats line(s)"))
+        return out
 
     def proposals(self, generated: str):
         """Outputs without a validated mapping -> normalize_proposals.json (merged by table)."""
@@ -994,7 +1226,23 @@ class Normalizer:
              f"- Database: `{self.db_path}`", f"- Date (UTC): {meta['normalized_at_utc']}",
              f"- Mapping table: `{self.map_path.name}` v{meta['map_version']} (sha256 {meta['map_sha256'][:16]}…)",
              f"- Timeline: **{tl[0]:,}** rows, from {tl[1]} to {tl[2]} (UTC)".replace(",", " "),
-             "- Detections: " + (", ".join(f"{lvl} {n}" for lvl, n in det) or "none"), ""]
+             "- Detections: " + (", ".join(f"{lvl} {n}" for lvl, n in det) or "none")]
+        if self.report.get("coverage"):
+            L.append("- Coverage: " + ", ".join(f"{k} {v}" for k, v in sorted(self.report["coverage"].items()))
+                     + " (table `coverage`)")
+        cons = self.report.get("conservation") or {}
+        if cons:
+            c = cons.get("counts", {})
+            L.append(f"- Conservation: {c.get('ok', 0)} check(s) ok, {c.get('warn', 0)} warning(s), "
+                     f"{c.get('fail', 0)} failure(s) (table `conservation`)")
+        L.append("")
+        if cons.get("problems"):
+            L += ["## Conservation: checks not ok", "", "| Status | Check | Output | Expected | Actual | Note |",
+                  "|---|---|---|---:|---:|---|"]
+            for pr in cons["problems"]:
+                L.append(f"| {pr['status']} | {pr['check']} | {pr['src_file']} | {pr['expected'] if pr['expected'] is not None else '?'} "
+                         f"| {pr['actual']} | {pr['note'] or ''} |")
+            L.append("")
         if self.report["errors"]:
             L += ["## Errors", ""] + [f"- {e}" for e in self.report["errors"]] + [""]
         hs = self.report.get("hashsets") or {}
@@ -1070,6 +1318,8 @@ class Normalizer:
             self.build_hashsets(con)
             self.write_sources(con)
             meta = self.write_meta(con, started)
+            self.build_coverage(con)
+            self.build_conservation(con)
             con.execute("""CREATE VIEW artifact_summary AS
                 SELECT artifact, category, tool, mapping, count(*) AS rows, min(ts) AS first_ts, max(ts) AS last_ts
                 FROM timeline GROUP BY ALL ORDER BY rows DESC""")

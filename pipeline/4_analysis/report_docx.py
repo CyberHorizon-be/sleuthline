@@ -572,6 +572,46 @@ def job_tools(tools) -> str:
         return str(tools or "")
 
 
+def has_table(db, name: str) -> bool:
+    return bool(getattr(db, "has_table", None)) and db.has_table(name)
+
+
+def case_sources_line(db) -> str | None:
+    """'Sources in this case: disk collection (2703 files), memory image (...). No network capture.' (1.1+)"""
+    try:
+        from analyze import sources_line
+        return sources_line(db.sources())
+    except Exception:                                   # noqa: BLE001  (database or module older than 1.1)
+        return None
+
+
+def conservation_text(db) -> str | None:
+    """'all 412 checks ok (no record lost between the tools and the database)' or the failures."""
+    if not has_table(db, "conservation"):
+        return None
+    cnt = dict(db.run("SELECT status, count(*) FROM conservation GROUP BY 1", max_rows=10)[1])
+    if not cnt.get("fail") and not cnt.get("warn"):
+        return f"all {cnt.get('ok', 0)} checks ok (no record lost between the tools and the database)"
+    bad = db.run("SELECT src_file, \"check\", expected, actual, note FROM conservation WHERE status = 'fail' "
+                 "ORDER BY 1 LIMIT 10", max_rows=10)[1]
+    txt = f"{cnt.get('ok', 0)} checks ok, {cnt.get('warn', 0)} warning(s), {cnt.get('fail', 0)} failure(s)"
+    if bad:
+        txt += ": " + "; ".join(f"{a} ({b}: expected {c}, got {d_}{', ' + e if e else ''})" for a, b, c, d_, e in bad)
+    return txt
+
+
+def memory_host(db) -> str | None:
+    """Host name from the memory image (COMPUTERNAME of the processes), when no disk artifact gives one."""
+    if "vol_envars" not in getattr(db, "raw_tables", set()):
+        return None
+    try:
+        rows = db.run("SELECT \"Value\", count(*) FROM raw.vol_envars WHERE \"Variable\" = 'COMPUTERNAME' "
+                      "AND \"Value\" IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 1", max_rows=1)[1]
+    except Exception:                                   # noqa: BLE001
+        return None
+    return str(rows[0][0]) if rows else None
+
+
 def long_date(d: dt.datetime) -> str:
     return f"{d.day} {d:%B %Y}"
 
@@ -607,7 +647,8 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     events = sorted(d["timeline_events"], key=lambda e: e.get("ts") or "")
     now = dt.datetime.now(dt.timezone.utc)
     gen = now.strftime("%Y-%m-%d %H:%M UTC")
-    main_host = hosts[0][0] if hosts else "?"
+    mem_host = None if hosts else memory_host(db)
+    main_host = hosts[0][0] if hosts else mem_host or "?"
     sm = d.get("summary") or {}
     win = d.get("incident_window") or {}
     period_of_interest = guidance.get("period") or {}
@@ -635,7 +676,9 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
                 f"({model}). Every finding is linked to verifiable records of the case database (references "
                 "<output>#<record>) and to the original path of the artifact. It must be reviewed and validated by an "
                 "analyst before any distribution or decision.")])
-    R.kv([("Client", client), ("Case", case.name), ("Main system", main_host),
+    R.kv([("Client", client), ("Case", case.name),
+          ("Main system", main_host + (" (name from the memory image)" if mem_host else "")),
+          *([("Evidence", src_line_about)] if (src_line_about := case_sources_line(db)) else []),
           ("Incident window (UTC)", period(win.get("start"), win.get("end"))),
           ("Trace period (UTC)", f"{period(tl_bulk[0], tl_bulk[1])} (99.8 % of the events)"),
           ("Report date", f"{long_date(now)}, version {rc.get('version') or '1.0'} (generated {gen})"),
@@ -669,6 +712,9 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         for q in guidance["questions"]:
             R.numbered_item(q, nid)
     R.h2("Sources analysed")
+    src_line = case_sources_line(db)
+    if src_line:
+        R.para(src_line)
     fam = defaultdict(list)
     for jd, title, status, tools, dur in jobs:
         fam[source_family(jd)].append((jd, title, status))
@@ -700,6 +746,19 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     bad = [r for r in jobs if r[2] != "ok"]
     if bad:
         R.bullet("Incomplete parsing sources: " + ", ".join(f"{r[0]} ({r[2]})" for r in bad) + ".")
+    for s_, v in sorted(d["steps"].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999):
+        if v.get("status") == "not_applicable":
+            R.bullet(f"Step {s_} ({v.get('title')}) not applicable: {v.get('reason')}.")
+    if has_table(db, "coverage"):
+        cov_counts = dict(db.run("SELECT status, count(*) FROM coverage GROUP BY 1", max_rows=10)[1])
+        if cov_counts:
+            R.bullet("Coverage of the evidence (appendix \"Coverage of the evidence\"): "
+                     + ", ".join(f"{k} {v}" for k, v in sorted(cov_counts.items()))
+                     + ". An artifact that is not \"analyzed\" was not available to the analysis: its absence of findings "
+                       "is not evidence of absence.")
+    cons = conservation_text(db)
+    if cons and not cons.startswith("all"):
+        R.bullet(f"Data conservation: {cons}.")
     gaps = [(s, v) for s, v in sorted(d["steps"].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999) if v.get("gaps")]
     if gaps:
         R.para("What each analysis step could not verify is listed in the appendix \"Analysis steps\".", size=18, color=MUTED)
@@ -977,6 +1036,22 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
             [[Cell(a or "", bold=True), t or "", m or "", f"{n:,}" if isinstance(n, int) else str(n or ""), short_ts(f1), short_ts(f2)]
              for a, t, m, n, f1, f2 in cov], [2600, 1400, 1000, 1000, 1819, 1819], size=15)
 
+    if has_table(db, "coverage"):
+        appendix("Coverage of the evidence")
+        R.para("Computed by the program from the inventory, the parsing jobs and the loaded tables. **not_collected**: absent "
+               "from the case; **not_covered**: no installed tool; **not_parsed**: the tool failed or did not run; "
+               "**empty**: parsed, no record; **analyzed**: records in the database.", size=18, color=MUTED)
+        cnt = db.run("SELECT source, status, count(*), sum(rows) FROM coverage GROUP BY ALL ORDER BY 1, 2", max_rows=50)[1]
+        R.table(["Source", "Status", "Artifacts", "Records"], [[Cell(a, bold=True), b, str(c), f"{n or 0:,}"] for a, b, c, n in cnt],
+                [2400, 2800, 2000, 2438])
+        rows = db.run("SELECT artifact, source, status, tool, detail FROM coverage WHERE status <> 'analyzed' "
+                      "ORDER BY source, status, artifact", max_rows=300)[1]
+        if rows:
+            R.subhead("Artifacts not analyzed")
+            R.table(["Artifact", "Source", "Status", "Tool", "Detail"],
+                    [[Cell(a or "", bold=True), b or "", c or "", t or "", x or ""] for a, b, c, t, x in rows],
+                    [2800, 1000, 1300, 1500, 3038], size=15, valign="top")
+
     appendix("Traceability")
     dbp = case / "db" / "case.duckdb"
     usage = d.get("usage", {})
@@ -985,6 +1060,7 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
           ("Pipeline version", str(meta.get("pipeline_version") or "unknown")),
           ("Collection integrity", integrity_text(meta.get("collection_integrity"))),
           ("Normalization mappings", f"v{meta.get('map_version')} sha256 {meta.get('map_sha256')}"),
+          ("Data conservation", conservation_text(db) or "not checked (database normalized before 1.1)"),
           ("Model", model),
           ("Agent runs", "\n".join(f"{r.get('started')} – {r.get('ended')}: {r.get('provider')}/{r.get('model')}, "
                                    f"playbook sha256 {str(r.get('playbook_sha256'))[:16]}…" for r in runs) or "?"),
