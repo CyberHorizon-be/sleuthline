@@ -73,7 +73,12 @@
   "_doc_budget": "max_billed_tokens_per_run: cap per run of analyze.py, in full-price input-equivalent tokens (cache read = 10 %, output = 5x). 0 = no limit. When reached, the state is saved: run again to continue.",
   "max_billed_tokens_per_run": 0,
   "_doc_context": "max_context_tokens_per_step: when the conversation of a step reaches this size (input + cache), exploration stops and the agent records its results then ends the step (cost and context window). 0 = no limit.",
-  "max_context_tokens_per_step": 180000
+  "max_context_tokens_per_step": 180000,
+  "_doc_decision": "Decision graph (2.0): max_tool_calls_per_triage_step = budget of the playbook steps without Phase: final; max_tool_calls_per_task = budget of an investigation task; max_tasks and max_lead_depth bound the leads investigated (the others are listed in the report). analyze --classic ignores them (1.2 flow).",
+  "max_tool_calls_per_triage_step": 30,
+  "max_tool_calls_per_task": 15,
+  "max_tasks": 30,
+  "max_lead_depth": 3
  },
  "report": {
   "_doc": "Defaults of the cover page, header and footer of the Word report. Put your own values in <root>\\pipeline\\local\\report.json (same keys, never overwritten by an update; see local\\report_example.json). Empty values: title = 'Forensic analysis' + main host, client = case name, subtitle = first sentence of the verdict, prepared_by = Sleuthline. logo (header) and cover_image (cover background, A4 portrait, 1240 x 1754 px): image files, path relative to local\\. investigator and about are optional.",

@@ -640,6 +640,20 @@ def finding_links(db, findings: list, limit: int = 40) -> list | None:
     return out[:limit]
 
 
+def not_investigated(d: dict) -> list[tuple[dict, str]]:
+    """Leads not investigated, with the reason (bound reached, opened after the tasks, partial or interrupted run)."""
+    ended = d.get("tasks_ended") or ""
+    out = []
+    for x in d.get("leads") or []:
+        if x.get("status") == "not_investigated":
+            out.append((x, x.get("not_investigated") or "bound reached"))
+        elif x.get("status") in ("open", "running"):
+            out.append((x, "opened after the investigation phase" if ended and (x.get("created") or "") >= ended
+                        else "interrupted" if x.get("status") == "running"
+                        else "not run (partial run with --steps or --classic, or analysis interrupted)"))
+    return out
+
+
 def long_date(d: dt.datetime) -> str:
     return f"{d.day} {d:%B %Y}"
 
@@ -811,6 +825,10 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     cons = conservation_text(db)
     if cons and not cons.startswith("all"):
         R.bullet(f"Data conservation: {cons}.")
+    pending = not_investigated(d)
+    if pending:
+        R.bullet(f"{len(pending)} lead(s) not investigated (appendix \"Decision trace\"): "
+                 + "; ".join(f"{x['id']} ({reason})" for x, reason in pending[:12]) + ("…" if len(pending) > 12 else "") + ".")
     gaps = [(s, v) for s, v in sorted(d["steps"].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999) if v.get("gaps")]
     if gaps:
         R.para("What each analysis step could not verify is listed in the appendix \"Analysis steps\".", size=18, color=MUTED)
@@ -958,13 +976,25 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     for f in d["findings"]:
         grouped[str(f.get("step"))].append(f)
 
+    first_final = min([s_["num"] for s_ in steps if s_.get("phase") == "final"] or [999])
+    lead_q = {x["id"]: x["question"] for x in d.get("leads") or []}
+
     def step_order(key: str):
+        if key.startswith("task:"):                    # investigation tasks: after the triage, before the final steps
+            return (first_final - 0.5, key)
         num, _, host = key.partition("@")
         return (int(num) if num.isdigit() else 999, host)
 
     for snum in sorted(grouped, key=step_order):
         num, _, host = snum.partition("@")
-        R.h2(step_titles.get(num, "One-off questions" if num == "question" else f"Step {num}") + (f" — {host}" if host else ""))
+        if snum.startswith("task:"):
+            lid = snum[5:]
+            q = lead_q.get(lid, "")
+            R.h2(f"Investigation task {lid}", toc=False)
+            if q:
+                R.para(f"**Question.** {q}", size=18, color=MUTED)
+        else:
+            R.h2(step_titles.get(num, "One-off questions" if num == "question" else f"Step {num}") + (f" — {host}" if host else ""))
         for f in sorted(grouped[snum], key=lambda f: (SEV_ORDER.get(f["severity"], 9), f.get("first_ts") or "")):
             R.h3(f"{f['id']} · {f['title']}")
             meta_line = (run(SEV_LABEL.get(f["severity"], f["severity"]), bold=True, size=17, color=SEV_COLOR.get(f["severity"]))
@@ -1056,6 +1086,29 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         if v.get("gaps"):
             R.subhead("Not verified")
             R.md(v["gaps"])
+
+    if d.get("leads"):
+        appendix("Decision trace")
+        R.para("How the analysis was driven after the triage (2.0): every lead, who opened it (a decision rule of "
+               "config\\decision_rules.json, or the agent during a step or a task), the task that investigated it and its "
+               "outcome. Leads not investigated are kept with the reason.", size=18, color=MUTED)
+        reasons = {x["id"]: r for x, r in not_investigated(d)}
+        rows = []
+        for x in d["leads"]:
+            if x.get("status") == "duplicate":
+                continue
+            outcome = x.get("outcome") if x.get("status") == "done" else f"not investigated: {reasons.get(x['id'], x.get('status'))}"
+            color = {"confirmed": ORANGE, "refuted": MUTED, "inconclusive": NAVY}.get(x.get("outcome")) if x.get("status") == "done" else MUTED
+            o = str(x.get("origin") or "")
+            o = (f"step {o.replace('@', ' on ')}" if o[:1].isdigit() else f"task {o}" if o.startswith("L-")
+                 else "a question" if o == "question" else o)
+            opened = x["source"].replace("rule:", "rule ") + (f", from {o}" if o else "") + f", depth {x['depth']}"
+            new_f = sorted({f["id"] for f in d["findings"] if f.get("step") == x.get("task_key")}) if x.get("task_key") else []
+            rows.append([Cell(x["id"], bold=True, sub=x["priority"]), Cell(opened), Cell(x["question"], sub=x.get("summary") or None),
+                         Cell(outcome or "", bold=True, color=color,
+                              sub=" · ".join(p for p in (", ".join(new_f), f"{x['tool_calls']} calls" if x.get("tool_calls") else "")
+                                             if p) or None)])
+        R.table(["Lead", "Opened by", "Question and answer", "Outcome"], rows, [900, 1900, 5038, 1800], size=15, valign="top")
 
     appendix("Guidance provided by the analyst")
     R.kv([("Context", guidance["context"].strip() or "none"),
