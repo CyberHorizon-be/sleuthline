@@ -647,8 +647,12 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     events = sorted(d["timeline_events"], key=lambda e: e.get("ts") or "")
     now = dt.datetime.now(dt.timezone.utc)
     gen = now.strftime("%Y-%m-%d %H:%M UTC")
-    mem_host = None if hosts else memory_host(db)
-    main_host = hosts[0][0] if hosts else mem_host or "?"
+    hl = db.hosts() if hasattr(db, "hosts") else []           # multi-host case (1.2): hosts of the case
+    case_hosts = [h for h in hl if h.get("kind") == "host"]
+    multi = bool(hl)
+    mem_host = None if hosts or multi else memory_host(db)
+    main_host = (", ".join(h["id"] for h in case_hosts) if multi
+                 else hosts[0][0] if hosts else mem_host or "?")
     sm = d.get("summary") or {}
     win = d.get("incident_window") or {}
     period_of_interest = guidance.get("period") or {}
@@ -659,7 +663,9 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     client = rc.get("client") or f"Case {case.name}"
     prepared_by = rc.get("prepared_by") or "Sleuthline"
     R.fill_placeholders({
-        "KIND": "INCIDENT RESPONSE REPORT", "TITLE": rc.get("title") or f"Forensic analysis\n{str(main_host).split('.')[0]}",
+        "KIND": "INCIDENT RESPONSE REPORT", "TITLE": rc.get("title") or ("Forensic analysis\n" + (" + ".join(h["id"] for h in case_hosts) if multi and len(case_hosts) <= 2
+                                                              else f"{len(case_hosts)} systems" if multi
+                                                              else str(main_host).split(".")[0])),
         "CLIENT": client, "SUBTITLE": rc.get("subtitle") or first_sentence(sm.get("verdict") or "") or f"Case {case.name}",
         "L_FOR": "Prepared for" if rc.get("prepared_for") else "", "PREPARED_FOR": rc.get("prepared_for") or "",
         "L_BY": "Prepared by", "PREPARED_BY": prepared_by,
@@ -677,14 +683,20 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
                 "<output>#<record>) and to the original path of the artifact. It must be reviewed and validated by an "
                 "analyst before any distribution or decision.")])
     R.kv([("Client", client), ("Case", case.name),
-          ("Main system", main_host + (" (name from the memory image)" if mem_host else "")),
+          (("Systems analysed", "\n".join(f"{h['id']}" + (f" (name in the artifacts: {h['name']})" if h.get("name") and
+                                                                  h["name"].split(".")[0].lower() != h["id"].lower() else "")
+                                           for h in case_hosts)
+                                + ("\nNetwork captures of the whole case" if any(h.get("kind") == "network" for h in hl) else ""))
+           if multi else ("Main system", main_host + (" (name from the memory image)" if mem_host else ""))),
           *([("Evidence", src_line_about)] if (src_line_about := case_sources_line(db)) else []),
           ("Incident window (UTC)", period(win.get("start"), win.get("end"))),
           ("Trace period (UTC)", f"{period(tl_bulk[0], tl_bulk[1])} (99.8 % of the events)"),
           ("Report date", f"{long_date(now)}, version {rc.get('version') or '1.0'} (generated {gen})"),
           ("Classification", rc.get("classification") or "TLP:AMBER"),
-          ("Time zone", "All times are UTC. Machine bias: ActiveTimeBias = "
-                        f"{meta.get('machine_active_time_bias_min')} min (UTC = local time + bias)"),
+          ("Time zone", "All times are UTC. " + (
+              "Local-time sources were converted with the time zone of their host: ActiveTimeBias "
+              f"{meta.get('machine_active_time_bias_min')} (minutes, UTC = local time + bias)" if multi else
+              f"Machine bias: ActiveTimeBias = {meta.get('machine_active_time_bias_min')} min (UTC = local time + bias)")),
           *([("Prepared for", rc["prepared_for"])] if rc.get("prepared_for") else []),
           ("Prepared by", prepared_by), ("Production", f"{TOOL_NOTE} Model: {model}.")])
     inv = rc.get("investigator") or {}
@@ -701,7 +713,8 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     # ---- 1. Introduction -------------------------------------------------------------------
     R.h1("Introduction")
     R.h2("Purpose of this report")
-    R.para(f"This report describes the forensic analysis of {main_host} (case {case.name}). It sets out what happened, "
+    R.para(f"This report describes the forensic analysis of {'the systems ' if multi else ''}{main_host} (case {case.name}). "
+           "It sets out what happened, "
            "how it happened, what was affected, and what should be done next. All conclusions are drawn from the "
            "artifacts of the case and cite their evidence.")
     if guidance.get("context", "").strip():
@@ -713,7 +726,17 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
             R.numbered_item(q, nid)
     R.h2("Sources analysed")
     src_line = case_sources_line(db)
-    if src_line:
+    if multi:
+        try:
+            from analyze import sources_line
+        except Exception:                               # noqa: BLE001
+            sources_line = None
+        for h in hl:
+            label = h["id"] if h.get("kind") == "host" else "Network captures of the whole case"
+            line = sources_line(h.get("sources") or {}).replace("Sources in this case: ", "") if sources_line else ""
+            hi = h.get("collection_integrity") or {}
+            R.bullet(f"**{label}**: {line}" + (f" Collection integrity {hi.get('verdict')}." if hi.get("verdict") else ""))
+    elif src_line:
         R.para(src_line)
     fam = defaultdict(list)
     for jd, title, status, tools, dur in jobs:
@@ -721,12 +744,12 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     integ = integrity(meta.get("collection_integrity"))
     if fam.get("disk"):
         names = sorted({re.split(r"\s+-\s+", t or j)[0] for j, t, s in fam["disk"]})
-        R.bullet(f"KAPE triage collection of the disk artifacts"
+        R.bullet(f"KAPE triage collection{'s' if multi else ''} of the disk artifacts"
                  + (f" (integrity {integ.get('verdict')}: {integ.get('ok', 0)} file(s) matching the KAPE SHA-1)" if integ else "")
                  + f", parsed with {', '.join(names)}")
-    for j, t, s in fam.get("memory", []):
-        R.bullet(f"Memory image, analysed with {t}")
-    for j, t, s in fam.get("network", []):
+    for t in sorted({t for j, t, s in fam.get("memory", [])}):
+        R.bullet(f"Memory image{'s' if multi else ''}, analysed with {t}")
+    for t in sorted({t for j, t, s in fam.get("network", [])}):
         R.bullet(f"Network captures, analysed with {t}")
     R.bullet(f"{tl_span[0]:,} timeline events normalised into one DuckDB database, with every record traceable to "
              "its tool output")
@@ -748,7 +771,8 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         R.bullet("Incomplete parsing sources: " + ", ".join(f"{r[0]} ({r[2]})" for r in bad) + ".")
     for s_, v in sorted(d["steps"].items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 999):
         if v.get("status") == "not_applicable":
-            R.bullet(f"Step {s_} ({v.get('title')}) not applicable: {v.get('reason')}.")
+            n_, _, h_ = str(s_).partition("@")
+            R.bullet(f"Step {n_} ({v.get('title')}){' on ' + h_ if h_ else ''} not applicable: {v.get('reason')}.")
     if has_table(db, "coverage"):
         cov_counts = dict(db.run("SELECT status, count(*) FROM coverage GROUP BY 1", max_rows=10)[1])
         if cov_counts:
@@ -778,9 +802,14 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     main = [f for f in findings if f["severity"] != "info"]
     if main:
         R.subhead("Main findings")
-        R.table(["ID", "Severity", "Confidence", "Finding"],
-                [[Cell(f["id"], bold=True), sev_cell(f["severity"]), shown_confidence(f), f["title"]] for f in main[:40]],
-                [900, 1100, 1500, 6138])
+        if multi:
+            R.table(["ID", "Severity", "Confidence", "Host", "Finding"],
+                    [[Cell(f["id"], bold=True), sev_cell(f["severity"]), shown_confidence(f), "\n".join(f.get("hosts") or []),
+                      f["title"]] for f in main[:40]], [900, 1100, 1400, 1700, 4538])
+        else:
+            R.table(["ID", "Severity", "Confidence", "Finding"],
+                    [[Cell(f["id"], bold=True), sev_cell(f["severity"]), shown_confidence(f), f["title"]] for f in main[:40]],
+                    [900, 1100, 1500, 6138])
 
     # ---- 3. Incident overview -------------------------------------------------------------------
     R.h1("Incident overview")
@@ -789,7 +818,13 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
            "\"Evidence timeline\"; the complete timeline of the incident window (all artifacts) is provided in "
            "incident_timeline.csv" + (" (truncated to 500,000 rows: set the period in guidance.txt)." if win.get("truncated") else "."),
            size=18, color=MUTED)
-    if events:
+    if events and multi:
+        R.table(["Date and time (UTC)", "Host", "Phase", "Event"],
+                [[short_ts(e["ts"]), Cell("\n".join(e.get("hosts") or []), bold=True),
+                  Cell((e.get("phase") or "").capitalize(), bold=True, color=NAVY),
+                  Cell(e["title"], bold=True, sub=e.get("description") or None)] for e in events],
+                [1800, 1700, 1500, 4638], valign="top")
+    elif events:
         R.table(["Date and time (UTC)", "Phase", "Event"],
                 [[short_ts(e["ts"]), Cell((e.get("phase") or "").capitalize(), bold=True, color=NAVY),
                   Cell(e["title"], bold=True, sub=e.get("description") or None)] for e in events],
@@ -818,7 +853,23 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
 
     R.h2("Affected systems")
     ioc_by_val = {str(i["value"]).lower(): i for i in d["iocs"]}
-    if hosts:
+    if multi:
+        rows = []
+        for h in case_hosts:
+            src = h.get("sources") or {}
+            have = ", ".join(k for k in ("disk", "memory", "network") if (src.get(k) or {}).get("present"))
+            cnt = defaultdict(int)
+            for f in d["findings"]:
+                if h["id"] in (f.get("hosts") or []):
+                    cnt[f["severity"]] += 1
+            rows.append([Cell(h["id"], bold=True, sub=h.get("name") if h.get("name") and h["name"] != h["id"] else None), have,
+                         ", ".join(f"{SEV_LABEL[k]}: {cnt[k]}" for k in SEV_LABEL if cnt[k]) or "none", f"{h.get('timeline_rows', 0):,}"])
+        R.table(["Host of the case", "Sources", "Findings", "Timeline events"], rows, [2800, 1900, 3138, 1800])
+        if hosts:
+            R.para("Host names found in the artifacts:", keep=True)
+    if hosts and multi:
+        R.table(["Name in the artifacts", "Events in the timeline"], [[Cell(h, bold=True), f"{n:,}"] for h, n in hosts], [6000, 3638])
+    elif hosts:
         R.table(["System", "Role", "Events in the timeline"],
                 [[Cell(h, bold=True), "Analysed host" if k == 0 else "Host name found in the artifacts", f"{n:,}"]
                  for k, (h, n) in enumerate(hosts)], [3600, 3800, 2238])
@@ -864,11 +915,18 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     grouped = defaultdict(list)
     for f in d["findings"]:
         grouped[str(f.get("step"))].append(f)
-    for snum in sorted(grouped, key=lambda x: int(x) if x.isdigit() else 999):
-        R.h2(step_titles.get(snum, "One-off questions" if snum == "question" else f"Step {snum}"))
+
+    def step_order(key: str):
+        num, _, host = key.partition("@")
+        return (int(num) if num.isdigit() else 999, host)
+
+    for snum in sorted(grouped, key=step_order):
+        num, _, host = snum.partition("@")
+        R.h2(step_titles.get(num, "One-off questions" if num == "question" else f"Step {num}") + (f" — {host}" if host else ""))
         for f in sorted(grouped[snum], key=lambda f: (SEV_ORDER.get(f["severity"], 9), f.get("first_ts") or "")):
             R.h3(f"{f['id']} · {f['title']}")
             meta_line = (run(SEV_LABEL.get(f["severity"], f["severity"]), bold=True, size=17, color=SEV_COLOR.get(f["severity"]))
+                         + (run("  ·  " + ", ".join(f["hosts"]), bold=True, size=17, color=NAVY) if f.get("hosts") else "")
                          + run(f"  ·  Confidence {shown_confidence(f)}  ·  " + (", ".join(f.get("mitre") or []) or "no ATT&CK technique")
                                + f"  ·  {period(f.get('first_ts'), f.get('last_ts'))} UTC"
                                + (f"  ·  {f['category']}" if f.get("category") else ""), size=17, color=MUTED))
@@ -924,7 +982,8 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     appendix("Findings by severity")
     if findings:
         R.table(["Severity", "ID", "Finding", "Confidence", "Period (UTC)"],
-                [[sev_cell(f["severity"]), Cell(f["id"], bold=True), f["title"], shown_confidence(f),
+                [[sev_cell(f["severity"]), Cell(f["id"], bold=True),
+                  Cell(f["title"], sub=", ".join(f["hosts"]) if f.get("hosts") else None), shown_confidence(f),
                   period(f.get("first_ts"), f.get("last_ts"))] for f in findings],
                 [1250, 850, 4138, 1500, 1900], size=16)
     else:
@@ -935,14 +994,19 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
            "read-only database, correlates the sources and records a finding only if all its evidence references exist in "
            "the database (automatic check). Artifact dates are interpreted according to their evidential value "
            "(e.g. ShimCache = presence, Prefetch = execution).")
-    R.table(["Step", "Purpose", "Status", "Tool calls", "Duration"],
-            [[str(s["num"]), s["title"], d["steps"].get(str(s["num"]), {}).get("status", "not run"),
-              str(d["steps"].get(str(s["num"]), {}).get("tool_calls", "")),
-              f"{d['steps'].get(str(s['num']), {}).get('duration_s', 0):.0f} s" if d["steps"].get(str(s["num"])) else ""] for s in steps],
-            [700, 5000, 1300, 1200, 1438])
+    runs_of = []                                    # (step, key) in playbook order, every host of a host step
     for s in steps:
-        v = d["steps"].get(str(s["num"]))
-        R.h3(f"Step {s['num']}: {s['title']}")
+        keys = sorted((k for k in d["steps"] if k.partition("@")[0] == str(s["num"])), key=lambda k: k.partition("@")[2])
+        runs_of += [(s, k) for k in keys] or [(s, str(s["num"]))]
+    R.table(["Step", "Purpose", "Status", "Tool calls", "Duration"],
+            [[k.replace("@", " @ "), s["title"], d["steps"].get(k, {}).get("status", "not run"),
+              str(d["steps"].get(k, {}).get("tool_calls", "")),
+              f"{d['steps'].get(k, {}).get('duration_s', 0):.0f} s" if d["steps"].get(k) else ""] for s, k in runs_of],
+            [1500 if multi else 700, 4500 if multi else 5000, 1300, 1100, 1238 if multi else 1438])
+    for s, k in runs_of:
+        v = d["steps"].get(k)
+        host = k.partition("@")[2]
+        R.h3(f"Step {s['num']}: {s['title']}" + (f" — {host}" if host else ""))
         if not v:
             R.para("(not run)", italic=True, color=MUTED)
             continue
@@ -969,14 +1033,20 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         color = None if status == "ok" else (ORANGE if status in ("failed", "stalled", "tool_missing") else "D9822B")
         rows.append([Cell(jd, bold=True), title, Cell(status, bold=bool(color), color=color), job_tools(tools), f"{dur or 0:.0f} s"])
     R.table(["Job", "Artifact / tool", "Status", "Tool and version", "Duration"], rows, [1700, 3000, 1000, 3138, 800], size=15)
-    norm = {}
-    try:
-        norm = json.loads((case / "db" / "normalize_report.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        pass
+    norm = {"warnings": [], "errors": [], "unmapped_tables": []}
+    for unit, folder in ([(h["id"], Path(h["database"]).parent) for h in hl if h.get("database")] if multi
+                         else [(None, case / "db")]):
+        try:
+            nr = json.loads((folder / "normalize_report.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for k in norm:
+            norm[k] += [(f"{unit}: " if unit else "") + str(x) for x in nr.get(k, [])]
     R.kv([("Analysis database", f"{case / 'db' / 'case.duckdb'}"),
           ("Pipeline version", str(meta.get("pipeline_version") or "unknown")),
-          ("Collection integrity", integrity_text(meta.get("collection_integrity"))),
+          ("Collection integrity", integrity_text(meta.get("collection_integrity")) if not multi else "\n".join(
+              f"{h['id']}: " + integrity_text(json.dumps(h["collection_integrity"]) if h.get("collection_integrity") else None)
+              for h in case_hosts)),
           ("Normalization", f"normalize.py v{meta.get('normalize_version')} on {meta.get('normalized_at_utc')}; "
                             f"mappings v{meta.get('map_version')} (sha256 {str(meta.get('map_sha256'))[:16]}…)"),
           ("Normalization warnings", "\n".join(norm.get("warnings", [])) or "none"),
@@ -1031,7 +1101,8 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
                 [1100, 3600, 1100, 3838], size=16)
 
     appendix("Artifact coverage")
-    cov = db.run("SELECT artifact, tool, mapping, rows, first_ts, last_ts FROM artifact_summary", max_rows=500)[1]
+    cov = db.run(("SELECT host_id || ': ' || artifact" if multi else "SELECT artifact")
+                 + ", tool, mapping, rows, first_ts, last_ts FROM artifact_summary", max_rows=500)[1]
     R.table(["Artifact", "Tool", "Mapping", "Events", "First (UTC)", "Last (UTC)"],
             [[Cell(a or "", bold=True), t or "", m or "", f"{n:,}" if isinstance(n, int) else str(n or ""), short_ts(f1), short_ts(f2)]
              for a, t, m, n, f1, f2 in cov], [2600, 1400, 1000, 1000, 1819, 1819], size=15)
@@ -1044,7 +1115,8 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         cnt = db.run("SELECT source, status, count(*), sum(rows) FROM coverage GROUP BY ALL ORDER BY 1, 2", max_rows=50)[1]
         R.table(["Source", "Status", "Artifacts", "Records"], [[Cell(a, bold=True), b, str(c), f"{n or 0:,}"] for a, b, c, n in cnt],
                 [2400, 2800, 2000, 2438])
-        rows = db.run("SELECT artifact, source, status, tool, detail FROM coverage WHERE status <> 'analyzed' "
+        rows = db.run(("SELECT host_id || ': ' || artifact" if multi else "SELECT artifact")
+                      + ", source, status, tool, detail FROM coverage WHERE status <> 'analyzed' "
                       "ORDER BY source, status, artifact", max_rows=300)[1]
         if rows:
             R.subhead("Artifacts not analyzed")
@@ -1057,8 +1129,12 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
     usage = d.get("usage", {})
     runs = d.get("runs", [])
     R.kv([("DuckDB database", f"{dbp}\nSHA-256 {sha256_file(dbp)}"),
+          *([("Host databases", "\n".join(f"{h['id']}: {h.get('database')}\nSHA-256 {h.get('db_sha256')}" for h in hl))]
+            if multi else []),
           ("Pipeline version", str(meta.get("pipeline_version") or "unknown")),
-          ("Collection integrity", integrity_text(meta.get("collection_integrity"))),
+          ("Collection integrity", integrity_text(meta.get("collection_integrity")) if not multi else "\n".join(
+              f"{h['id']}: " + integrity_text(json.dumps(h["collection_integrity"]) if h.get("collection_integrity") else None)
+              for h in case_hosts)),
           ("Normalization mappings", f"v{meta.get('map_version')} sha256 {meta.get('map_sha256')}"),
           ("Data conservation", conservation_text(db) or "not checked (database normalized before 1.1)"),
           ("Model", model),

@@ -2,7 +2,7 @@
 
 This file drives `analyze.py`. Each `## Step N: title` section is run in order, in a separate conversation: the agent receives the text of the step, the findings of the previous steps, the guidance file of the case (questions, IOCs, context) and the tools to query the DuckDB database.
 
-The playbook can be edited freely: add, remove or reorder steps, refine queries. The `## Rules` section applies to every step. A step dedicated to one kind of evidence declares it on the line after its title (`Requires: memory`, `Requires: network`, `Requires: disk`, several separated by `|`): when the case contains none of them, the step is recorded as not applicable without calling the model. Do not add `Requires:` to a general step: every source (disk, memory, network) feeds almost every step. Source of truth: `<repository>\pipeline\config\PLAYBOOK.md`, to be redeployed with `install\02_Install-Tools.ps1 -Only Pipeline`.
+The playbook can be edited freely: add, remove or reorder steps, refine queries. The `## Rules` section applies to every step. A step dedicated to one kind of evidence declares it on the line after its title (`Requires: memory`, `Requires: network`, `Requires: disk`, several separated by `|`): when the case contains none of them, the step is recorded as not applicable without calling the model. Do not add `Requires:` to a general step: every source (disk, memory, network) feeds almost every step. In a case with several hosts (`<case>\hosts\<host>\`), `Scope: host` runs the step once per host, with the queries limited to that host; `Scope: case` (default) runs it once for the whole case, to link the hosts. A single-host case runs every step once. Source of truth: `<repository>\pipeline\config\PLAYBOOK.md`, to be redeployed with `install\02_Install-Tools.ps1 -Only Pipeline`.
 
 Inspired by the SANS FOR500/FOR508 methodologies (triage, execution, persistence, accounts, lateral movement, user activity, anti-forensics, exfiltration, timeline).
 
@@ -10,7 +10,7 @@ Inspired by the SANS FOR500/FOR508 methodologies (triage, execution, persistence
 
 1. **Observed facts only.** Every statement relies on records of the database, cited by their `ref` (`ref` column of `timeline` / `detections`, or `<_src_file>#<_src_row>` for a raw table). A finding without verifiable evidence is refused by the tool.
 2. **Distinguish fact, interpretation and hypothesis.** The `confidence` field (`confirmed`, `probable`, `possible`) and the text must reflect it. Absence of evidence is not evidence of absence: check the `coverage` tool first. "Not found" may only be written for an artifact whose coverage status is `analyzed`; otherwise state its status (`not_collected`, `not_covered`, `not_parsed`, `empty`).
-3. **All times are UTC.** The time zone of the machine is in `meta` (`machine_active_time_bias_min`): mention it when it helps the interpretation.
+3. **All times are UTC.** The time zone of the machine is in `meta` (`machine_active_time_bias_min`; per host in a multi-host case): mention it when it helps the interpretation.
 4. **Know the evidential value of each artifact**:
    - ShimCache = presence / modification date of the file, not an execution (except the Executed field on Windows 7);
    - Amcache = presence and SHA1, not necessarily an execution;
@@ -28,8 +28,10 @@ Inspired by the SANS FOR500/FOR508 methodologies (triage, execution, persistence
 8. **Be exhaustive and technical.** Full paths, hashes, EventIDs, SIDs, RecordIDs, registry values, command lines: the final report must allow another analyst to re-check everything.
 9. **SQL queries.** One query at a time, with `LIMIT`. Use `ILIKE` for text searches. Raw table columns are text: convert with `ts_parse(col)` or `TRY_CAST`. The `ts_parse`, `orig_path`, `user_from_path` macros are available.
 10. **End each step** with `step_complete`, with a technical summary of what was checked, found, and what could not be.
+11. **Several hosts** (multi-host case only). Every common table has a `host_id` column, the `raw.*` views a `_host` column, and references start with `<host_id>:`. In a host step, stay on that host. In a case step, link the hosts with evidence from each side (e.g. outbound RDP on one host, logon type 10 from its address on the other, the flow in the capture). Times are UTC on every host, but the clocks may differ: measure the offset on a pivot seen on both sides before concluding on an order of events. Evidence from two hosts counts as two sources.
 
 ## Step 1: System context and scope
+Scope: host
 
 Goal: describe the analyzed machine and its users to frame the analysis.
 
@@ -44,6 +46,7 @@ Goal: describe the analyzed machine and its users to frame the analysis.
 Expected findings: one context finding "System description" (severity `info`) citing the evidence, plus one per scope anomaly (empty log, missing source).
 
 ## Step 2: Triage of automatic detections
+Scope: host
 
 Goal: use the Hayabusa, Chainsaw, Zircolite and Windows Defender alerts as pivots.
 
@@ -56,6 +59,7 @@ Goal: use the Hayabusa, Chainsaw, Zircolite and Windows Defender alerts as pivot
 Expected findings: one finding per true positive or coherent group of alerts; notable false positives are listed in the step summary.
 
 ## Step 3: Program execution
+Scope: host
 
 Goal: establish which programs were executed, when, by whom and from where.
 
@@ -71,6 +75,7 @@ Goal: establish which programs were executed, when, by whom and from where.
 - If a memory image was analyzed: was the executable still running at the capture (`raw.vol_pslist`, `raw.vol_cmdline`)? Memory is examined in detail at the next step.
 
 ## Step 4: Memory (RAM)
+Scope: host
 Requires: memory
 
 Goal: if a memory image was analyzed (tables `raw.vol_*`; `raw.vol_image` gives its name and SHA-256), establish what was running at the moment of the capture and confront it with the disk. If there is no `raw.vol_*` table, record in step_complete that no memory image was provided, and move on.
@@ -85,6 +90,7 @@ Goal: if a memory image was analyzed (tables `raw.vol_*`; `raw.vol_image` gives 
 - **Confront memory and disk** for every suspicious process: its executable on disk (`raw.mft`, Prefetch, Amcache SHA1), its creation in the event logs (4688, Sysmon 1 with the same PID and time), its network activity. A process in memory with no trace on disk (deleted file, fileless code) and a disk artifact contradicted by memory are findings in themselves. Cite the memory record **and** the disk records: they are independent sources.
 
 ## Step 5: Network traffic (PCAP)
+Scope: case
 Requires: network
 
 Goal: if network captures were analyzed (tables `raw.suricata_*`; `raw.pcap_files` gives their names and SHA-256), establish who the machine talked to, what was transferred, and confront it with the disk and the memory. If there is no `raw.suricata_*` table, record in step_complete that no capture was provided, and move on.
@@ -97,6 +103,7 @@ Goal: if network captures were analyzed (tables `raw.suricata_*`; `raw.pcap_file
 - **Confront network, disk and memory**: for each suspicious connection, the process that owned it (memory `raw.vol_netscan`: same endpoints and time; disk: Sysmon 3, SRUM network usage, browser history, Defender), and for each downloaded file, its creation and execution on the disk. Cite the network record **and** the disk / memory records: they are independent sources.
 
 ## Step 6: Persistence
+Scope: host
 
 Goal: identify any mechanism allowing to survive a reboot or to start again.
 
@@ -111,6 +118,7 @@ Goal: identify any mechanism allowing to survive a reboot or to start again.
 - Compare the creation dates with the incident window; rule out legitimate Microsoft / vendor entries with a justification.
 
 ## Step 7: Accounts, authentication and privileges
+Scope: host
 
 Goal: trace logons, accounts used or created and privilege escalations.
 
@@ -120,6 +128,7 @@ Goal: trace logons, accounts used or created and privilege escalations.
 - Look for: new accounts, accounts added to the administrators, unusual type 3/10 logons, bursts of failures, use of explicit credentials (4648).
 
 ## Step 8: Remote access and lateral movement
+Scope: case
 
 Goal: determine whether the machine was controlled remotely or used as a pivot.
 
@@ -132,6 +141,7 @@ Goal: determine whether the machine was controlled remotely or used as a pivot.
 - Network (if available): flows of `raw.suricata_flow` to or from internal hosts on 445, 3389, 5985/5986, 135, and SMB / DCERPC / Kerberos / RDP events (`raw.suricata_eve_smb`, `raw.suricata_eve_dcerpc`, `raw.suricata_eve_krb5`, `raw.suricata_eve_rdp`).
 
 ## Step 9: User activity on files and folders
+Scope: host
 
 Goal: rebuild the files and folders opened, created, renamed or deleted around the identified pivots.
 
@@ -145,6 +155,7 @@ Goal: rebuild the files and folders opened, created, renamed or deleted around t
 - Removable devices: `raw.reg_usb`, `raw.reg_usbstor`, `raw.reg_portabledevices`, EMDMgmt (`raw.registry_complement`), setupapi (`timeline` artifact `setupapi.dev.log`), volumes in LNK/Jump Lists (volume serial number to match with EMDMgmt, converted to hexadecimal).
 
 ## Step 10: Web browsing, downloads and e-mail
+Scope: host
 
 Goal: identify the origin of the suspicious files and the relevant web activity.
 
@@ -155,6 +166,7 @@ Goal: identify the origin of the suspicious files and the relevant web activity.
 - Typed searches revealing the intent (tools, techniques, evasion).
 
 ## Step 11: Defense evasion and anti-forensics
+Scope: host
 
 Goal: detect attempts to hide the activity or to weaken security.
 
@@ -166,6 +178,7 @@ Goal: detect attempts to hide the activity or to weaken security.
 - Memory (if available): injection, hollowing, hooks and hidden processes found at step 4 (`raw.vol_malfind`, `raw.vol_psxview`, `raw.vol_ldrmodules`, `raw.vol_etwpatch`...).
 
 ## Step 12: Collection, exfiltration and communications
+Scope: case
 
 Goal: assess whether data was gathered, compressed or sent outside.
 
@@ -177,6 +190,7 @@ Goal: assess whether data was gathered, compressed or sent outside.
 - Network indicators to extract as IOCs: IPs, domains, URLs.
 
 ## Step 13: Incident timeline and correlation
+Scope: case
 
 Goal: assemble the findings into a coherent incident timeline.
 
@@ -186,6 +200,7 @@ Goal: assemble the findings into a coherent incident timeline.
 - List the final IOCs with `add_ioc` (hash, path, file name, IP, domain, URL, account, registry key, service, task), each with its evidence.
 
 ## Step 14: Summary, answers and recommendations
+Scope: case
 
 Goal: produce the summary elements of the report.
 
