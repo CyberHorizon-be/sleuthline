@@ -46,7 +46,12 @@ def source_key(e: dict) -> str:
         source; the image and a disk artifact are two);
       - network: the network captures as a whole (a Suricata alert and the flow it fires on are ONE
         source);
-      - other artifacts: the artifact type (Prefetch, Amcache, MFT, a registry artifact...)."""
+      - other artifacts: the artifact type (Prefetch, Amcache, MFT, a registry artifact...).
+    In a multi-host case, the key is qualified by the host: the Prefetch of two hosts are two sources."""
+    host = e.get("host")
+    if host:
+        ref = str(e.get("ref", ""))
+        return host + "/" + source_key({**e, "host": None, "ref": ref.split(":", 1)[1] if ref.startswith(host + ":") else ref})
     art0 = str(e.get("artifact") or e.get("table") or "").strip().lower()
     if (art0.startswith(("memory", "raw.vol_")) or str(e.get("ref", "")).startswith("volatility/")):
         return "memory"
