@@ -6,7 +6,11 @@ Deterministic (no model): extracted from the unified timeline and the detections
 which already carries the mapped path, account, host and description of every source: disk, memory,
 network) and from the hash matches (hash_hits).
 
-  entity_refs(entity_id, type, norm, value, ref, ts, host, host_id, artifact, role)
+  entity_refs(entity_id, type, norm, value, ref, ts, host, host_id, artifact, relation, family)
+     relation: subject (path / account / host of the record), cited (found in its text), endpoint (remote address
+     of a network record), hash (labelled hash of the record's file), hash_match (hash list match)
+     family: what the artifact says (executed, present, file_system, network, memory, opened, browsing,
+     persistence, event_log, detected, record)
   entities(entity_id, type, norm, value, refs, records, artifacts, hosts, first_ts, last_ts, common)
 
 entity_id = 'E' + 12 hex of md5(type:norm): the same entity has the same id in every database of a case
@@ -81,6 +85,17 @@ def guess_type(value: str) -> list[str]:
     return ["account", "host"]
 
 
+# Family of the artifact of a record: what it says about its subject (first match wins)
+FAMILIES = [("detected", r"^detection"), ("executed", r"prefetch|bam|userassist|srum.*app|process creation|\b4688\b"),
+            ("present", r"amcache|shimcache|appcompat|recentfilecache"),
+            ("memory", r"^memory"), ("network", r"suricata|network|flow|dns|http|tls|smb|netscan"),
+            ("file_system", r"\$mft|\$j\b|usnjrnl|\$logfile|\$i30|recycle"),
+            ("opened", r"lnk|jump ?list|shellbag|recentdocs|opensave|lastvisited"),
+            ("browsing", r"webcache|browser|chrome|edge|firefox|hindsight|download"),
+            ("persistence", r"task|service|run key|autorun|wmi"), ("event_log", r"event log|evtx|powershell")]
+FAMILY_SQL = "CASE " + " ".join(f"WHEN regexp_matches(lower(artifact), '{rx}') THEN '{f}'" for f, rx in FAMILIES) + " ELSE 'record' END"
+
+
 def entity_id_sql(t: str, n: str) -> str:
     return f"'E' || substr(md5({t} || ':' || {n}), 1, 12)"
 
@@ -95,19 +110,19 @@ def build(con, multi: bool = False, log=print) -> dict:
     parts = [
         # files: full paths (path column), normalized without the drive / volume
         f"""SELECT 'file' AS type, {_PATH_SQL.format(x='path')} AS norm, path AS value, ref, ts, host, host_id, artifact,
-                   'path' AS role FROM _src
+                   'subject' AS role FROM _src
             WHERE path IS NOT NULL AND regexp_matches(path, '^([A-Za-z]:\\\\|\\\\|%[A-Za-z]+%\\\\)')
               AND regexp_matches(path, '\\.[A-Za-z0-9]{{1,5}}$')""",
         # full paths of executables / scripts / archives quoted in the description (command lines, 4688, 7045, Sysmon...)
-        f"""SELECT 'file', {_PATH_SQL.format(x='p')}, p, ref, ts, host, host_id, artifact, 'path' FROM
+        f"""SELECT 'file', {_PATH_SQL.format(x='p')}, p, ref, ts, host, host_id, artifact, 'cited' FROM
               (SELECT unnest(regexp_extract_all(description,
                       '(?i)((?:[A-Za-z]:|%[A-Za-z]+%|\\\\Device\\\\HarddiskVolume\\d+)\\\\[^\\s"''|<>*?:]+\\.(?:{NAME_EXT}))(?:[^A-Za-z0-9_]|$)', 1)) AS p,
                       ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL)""",
         # file names of executables / scripts / archives: from the path and from the description
         f"""SELECT 'filename', lower(regexp_extract(path, '([^\\\\/]+)$', 1)), regexp_extract(path, '([^\\\\/]+)$', 1),
-                   ref, ts, host, host_id, artifact, 'name' FROM _src
+                   ref, ts, host, host_id, artifact, 'subject' FROM _src
             WHERE path IS NOT NULL AND regexp_matches(path, '(?i)\\.({NAME_EXT})$')""",
-        f"""SELECT 'filename', lower(n), n, ref, ts, host, host_id, artifact, 'name' FROM
+        f"""SELECT 'filename', lower(n), n, ref, ts, host, host_id, artifact, 'cited' FROM
               (SELECT unnest(regexp_extract_all(description, '(?i)([A-Za-z0-9_$~.-]+\\.(?:{NAME_EXT}))(?:[^A-Za-z0-9_]|$)', 1)) AS n,
                       ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL)
             WHERE length(n) BETWEEN 5 AND 120 AND NOT starts_with(n, '.')""",
@@ -117,22 +132,22 @@ def build(con, multi: bool = False, log=print) -> dict:
                      '(?i)(?:md5|sha-?1|sha-?256|hash(?:es)?)[^0-9a-f]{0,12}([0-9a-f]{64}|[0-9a-f]{40}|[0-9a-f]{32})(?:[^0-9a-f]|$)', 1)) AS h,
                      ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL)""",
         # IPv4 addresses: in the description, and as the whole path (network sources map the remote address there)
-        f"""SELECT 'ip', ip, ip, ref, ts, host, host_id, artifact, 'ip' FROM
+        f"""SELECT 'ip', ip, ip, ref, ts, host, host_id, artifact, 'cited' FROM
              (SELECT unnest(regexp_extract_all(description, '(?:^|[^0-9A-Za-z.])({IP_RX})(?:[^0-9.]|$)', 1)) AS ip,
                      ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL)""",
-        f"""SELECT 'ip', path, path, ref, ts, host, host_id, artifact, 'ip' FROM _src
+        f"""SELECT 'ip', path, path, ref, ts, host, host_id, artifact, 'endpoint' FROM _src
             WHERE path IS NOT NULL AND regexp_full_match(path, '{IP_RX}')""",
-        f"""SELECT 'ip', lower(ip), ip, ref, ts, host, host_id, artifact, 'ip' FROM
+        f"""SELECT 'ip', lower(ip), ip, ref, ts, host, host_id, artifact, 'cited' FROM
              (SELECT unnest(regexp_extract_all(description, '{IP6_RX}', 1)) AS ip,
                      ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL AND contains(description, ':'))
             WHERE length(ip) >= 3 AND ip <> '::' AND regexp_matches(ip, '[0-9a-fA-F]')
               AND (contains(ip, '::') OR length(ip) - length(replace(ip, ':', '')) = 7)
               AND NOT regexp_full_match(ip, '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}')""",
         # URLs and their domain
-        """SELECT 'url', lower(u), u, ref, ts, host, host_id, artifact, 'url' FROM
+        """SELECT 'url', lower(u), u, ref, ts, host, host_id, artifact, 'cited' FROM
              (SELECT unnest(regexp_extract_all(description, '(?i)(https?://[^\\s"''<>|]+)', 1)) AS u,
                      ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL)""",
-        """SELECT 'domain', lower(d), d, ref, ts, host, host_id, artifact, 'domain' FROM
+        """SELECT 'domain', lower(d), d, ref, ts, host, host_id, artifact, 'cited' FROM
              (SELECT regexp_extract(u, '(?i)^https?://([^/:?#]+)', 1) AS d, ref, ts, host, host_id, artifact FROM
                (SELECT unnest(regexp_extract_all(description, '(?i)(https?://[^\\s"''<>|]+)', 1)) AS u,
                        ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL))
@@ -141,7 +156,7 @@ def build(con, multi: bool = False, log=print) -> dict:
         """SELECT CASE WHEN regexp_full_match(user_name, '(?i)S-1-\\d+(-\\d+)+') THEN 'sid' ELSE 'account' END,
                   lower(trim(user_name)), user_name, ref, ts, host, host_id, artifact, 'account' FROM _src
             WHERE user_name IS NOT NULL AND trim(user_name) <> ''""",
-        """SELECT 'sid', lower(s), s, ref, ts, host, host_id, artifact, 'sid' FROM
+        """SELECT 'sid', lower(s), s, ref, ts, host, host_id, artifact, 'cited' FROM
              (SELECT unnest(regexp_extract_all(description, '(?i)(S-1-5-21-\\d+-\\d+-\\d+-\\d+)', 1)) AS s,
                      ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL)""",
         # host names found in the records (computer name of the event, of the memory image...)
@@ -153,14 +168,19 @@ def build(con, multi: bool = False, log=print) -> dict:
     if has_hits:
         hits_host = "host_id" if multi else "CAST(NULL AS VARCHAR)"
         parts.append(f"""SELECT 'hash', lower(h.hash), h.hash, h.ref, t.ts, t.host, {('h.' + hits_host) if multi else hits_host},
-                                coalesce(t.artifact, h.src_table), 'hash' FROM hash_hits h
+                                coalesce(t.artifact, h.src_table), 'hash_match' FROM hash_hits h
                          LEFT JOIN (SELECT ref, any_value(ts) AS ts, any_value(host) AS host, any_value(artifact) AS artifact
                                     FROM _src GROUP BY ref) t ON t.ref = h.ref
                          WHERE h.ref IS NOT NULL AND h.hash IS NOT NULL""")
     union = " UNION ALL ".join(f"({p})" for p in parts)
     con.execute("DROP TABLE IF EXISTS entity_refs")
+    # relation: is the entity the subject of the record (its path, its account, its remote address, the hash of its
+    # file) or only cited in its text (a command line, a message)? family: what the artifact says about it.
+    # Both keep co-occurrence from being read as causality: a file executed (Prefetch) and a file cited in a log
+    # line are not the same evidence.
     con.execute(f"""CREATE TABLE entity_refs AS
-        SELECT DISTINCT {entity_id_sql('type', 'norm')} AS entity_id, type, norm, value, ref, ts, host, host_id, artifact, role
+        SELECT DISTINCT {entity_id_sql('type', 'norm')} AS entity_id, type, norm, value, ref, ts, host, host_id, artifact,
+               role AS relation, {FAMILY_SQL} AS family
         FROM ({union}) WHERE norm IS NOT NULL AND norm <> ''""")
     total = con.execute("SELECT count(*) FROM entity_refs").fetchone()[0]
     threshold = max(COMMON_MIN_REFS, int(total * COMMON_SHARE))

@@ -922,18 +922,22 @@ class Agent:
         if not ent:
             return msg if msg.startswith(("ERROR", "No ", "Unknown", "Several")) else "ERROR: " + msg
         hcol = "coalesce(host_id, host)" if self.db.multi else "host"
+        cols_er = {r[0] for r in self.db.run("SELECT column_name FROM information_schema.columns "
+                                             "WHERE table_name = 'entity_refs'", max_rows=50)[1]}
+        rel = "relation || ' / ' || family" if "relation" in cols_er else "'?'"     # graph built before relations: '?'
         cond, params = ["entity_id = ?"], [ent["entity_id"]]
         if host:
             cond.append(f"{hcol} ILIKE ?" + LIKE_ESCAPE)
             params.append(like(host))
         where = " AND ".join(cond)
         cols, rows = self.db.run(
-            f"SELECT {hcol} AS host, artifact, count(*) AS records, min(ts) AS first_ts, max(ts) AS last_ts, "
+            f"SELECT {hcol} AS host, artifact, {rel} AS relation, count(*) AS records, min(ts) AS first_ts, max(ts) AS last_ts, "
             f"string_agg(ref, ' ' ORDER BY ts) FILTER (WHERE ref IS NOT NULL) AS refs FROM entity_refs WHERE {where} "
             "GROUP BY ALL ORDER BY min(ts)", params, 200)
-        rows = [r[:5] + ((" ".join(str(r[5] or "").split()[:4]),)) for r in rows]
+        rows = [r[:6] + ((" ".join(str(r[6] or "").split()[:4]),)) for r in rows]
         co_cols, co = self.db.run(
-            "SELECT e.entity_id, e.type, e.value, e.refs AS total_refs, count(DISTINCT r2.ref) AS shared_records "
+            f"SELECT e.entity_id, e.type, e.value, {rel.replace('relation', 'r2.relation').replace('family', 'r2.family')} AS relation, "
+            "e.refs AS total_refs, count(DISTINCT r2.ref) AS shared_records "
             "FROM entity_refs r1 JOIN entity_refs r2 ON r2.ref = r1.ref AND r2.entity_id <> r1.entity_id "
             f"JOIN entities e ON e.entity_id = r2.entity_id WHERE r1.entity_id = ?"
             + ("" if include_common else " AND NOT e.common")
@@ -941,7 +945,10 @@ class Agent:
         head = (f"Entity {ent['entity_id']}: {ent['type']} {ent['value']} (normalized {ent['norm']}) - {ent['refs']} reference(s) "
                 f"in {ent['records']} record(s), {ent['artifacts']} artifact(s), hosts {ent['hosts'] or '?'}, "
                 f"{ent['first_ts']} -> {ent['last_ts']}" + (" [COMMON: seen everywhere]" if ent["common"] else ""))
-        return (head + "\n\nWhere it appears (first 4 refs per line):\n"
+        return (head + "\n\nWhere it appears (first 4 refs per line). relation: subject = the record is about this entity "
+                "(its path, account, remote address, hash), cited = only mentioned in its text; family = what the artifact "
+                "says (executed, present, file_system, network, memory, opened, browsing, persistence, event_log, "
+                "detected). Appearing in the same record or time window is not, by itself, a causal link.\n"
                 + format_table(cols, rows, self.limits["max_result_chars"] // 2)
                 + "\n\nEntities in the same records:\n" + format_table(co_cols, co, self.limits["max_result_chars"] // 3))
 
