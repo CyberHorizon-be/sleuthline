@@ -1700,6 +1700,75 @@ class TestDecisionAudit(unittest.TestCase):
             made = analyze.decision.evaluate_rules(rules, st, db, leads, 1, "t", log=lambda *a: None)
             self.assertEqual(len(made), 1)
             self.assertEqual((made[0]["origin"], made[0]["also"]), ("F-001", ["F-002"]))
+            # audit 4: the rule lead carries its seeds, rarest entity first, and the task receives them
+            ids = made[0]["entity_ids"]
+            self.assertTrue(ids)
+            refs = [r[0] for r in duckdb.connect(str(case / "db" / "case.duckdb"), read_only=True).execute(
+                "SELECT refs FROM entities WHERE entity_id IN (SELECT unnest(?)) ORDER BY list_position(?, entity_id)",
+                [ids, ids]).fetchall()]
+            self.assertEqual(refs, sorted(refs))
+            agent = analyze.Agent(case, db, st, None, dict(analyze.DEFAULT_LIMITS), {"questions": []}, "", lambda *a: None,
+                                  Path(d) / "t.jsonl")
+            self.assertEqual(agent.lead_seeds(made[0]), ids[:3])
+            self.assertNotIn("SEEDS (entity graph):\n(none)", agent.task_prompt(made[0], 1, 30))
+
+    def test_challenge_profile_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = Path(d) / "c.json"
+            base = {"active": "a", "profiles": {"a": {"provider": "mock", "model": "m1"}, "b": {"provider": "mock", "model": "m2"}}}
+            c.write_text(json.dumps({**base, "challenge_profile": "b"}), encoding="utf-8")
+            _, pcfg, _ = analyze.load_config(c, None)
+            self.assertEqual((pcfg["_challenge"]["_name"], pcfg["_challenge"]["model"]), ("b", "m2"))
+            _, pcfg, _ = analyze.load_config(c, "b")                            # same profile: no swap
+            self.assertIsNone(pcfg["_challenge"])
+            c.write_text(json.dumps({**base, "challenge_profile": "zz"}), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                analyze.load_config(c, None)
+            self.assertEqual(analyze.load_config(PIPE / "config" / "llm_config.json", None)[2]["max_leads_per_rule"], 5)
+
+    def test_rule_quota(self):
+        rules = [r for r in analyze.decision.load_rules(PIPE / "config" / "decision_rules.json") if r["id"] == "persistence-origin"]
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            db = analyze.CaseDB(case / "db" / "case.duckdb", analyze.DEFAULT_LIMITS)
+            st = analyze.State(Path(d) / "f.json")
+            st.d["findings"] += [{"id": f"F-00{i}", "title": f"Service {i}", "severity": "critical" if i == 3 else "high",
+                                  "description": "7045 new service", "evidence": []} for i in (1, 2, 3)]
+            leads = analyze.decision.Leads(st)
+            analyze.decision.evaluate_rules(rules, st, db, leads, 1, "t", log=lambda *a: None, max_leads_per_rule=2)
+            status = {x["origin"]: (x["status"], x.get("not_investigated")) for x in st.d["leads"]}
+            self.assertEqual(status["F-003"][0], "open")                       # most severe first
+            self.assertEqual(sorted(v[0] for v in status.values()), ["not_investigated", "open", "open"])
+            self.assertIn(("not_investigated", "rule quota (2 leads per rule)"), status.values())
+
+    def test_agent_lead_dedup_and_challenge_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            sys.path.insert(0, str(PIPE / "3_normalize"))
+            import entities
+            con = duckdb.connect(str(case / "db" / "case.duckdb"))
+            entities.build(con, log=lambda *a: None)
+            con.close()
+            db = analyze.CaseDB(case / "db" / "case.duckdb", analyze.DEFAULT_LIMITS)
+            st = analyze.State(Path(d) / "f.json")
+            agent = analyze.Agent(case, db, st, None, dict(analyze.DEFAULT_LIMITS), {"questions": []}, "", lambda *a: None,
+                                  Path(d) / "t.jsonl")
+            r1 = agent.t_add_lead("Where does EVIL.EXE come from?", "x", "high", refs=["prefetch/p.csv#1"])
+            r2 = agent.t_add_lead("Where did the EVIL.EXE file come from?", "y", "high", refs=["evtx/e.csv#1"])
+            r3 = agent.t_add_lead("Who ran EVIL.EXE at logon and with which privileges exactly?", "z", "medium", refs=["evtx/e.csv#1"])
+            self.assertTrue(r1.startswith("OK: lead L-001"))
+            self.assertIn("close to L-001", r2)                                 # same file, reworded
+            self.assertTrue(r3.startswith("OK: lead L-002"))                    # same file, another question
+            st.d["findings"].append({"id": "F-001", "title": "EVIL.EXE executed", "severity": "critical", "confidence": "confirmed",
+                                     "evidence": [{"ref": "prefetch/p.csv#1"}]})
+            agent.t_add_hypothesis("bob ran EVIL.EXE", ["F-001"])
+            ch = next(x for x in st.d["leads"] if x["source"] == "challenge")
+            p = agent.task_prompt(ch, 1, 10)
+            self.assertIn("independent reviewer", p)
+            self.assertIn("supports: F-001 [critical/confirmed] EVIL.EXE executed", p)
+            self.assertNotIn("ANALYSIS STATE", p)                               # fresh context
 
     def test_challenge_from_a_later_link_and_again_after_a_contradiction(self):
         with tempfile.TemporaryDirectory() as d:

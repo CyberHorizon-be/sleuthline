@@ -80,8 +80,12 @@
   "max_tasks": 30,
   "max_lead_depth": 3,
   "_doc_challenge": "max_challenge_tasks: challenge tasks (search for counter-evidence of the hypotheses backed by a critical or high finding), counted apart from max_tasks.",
-  "max_challenge_tasks": 10
+  "max_challenge_tasks": 10,
+  "_doc_rule_quota": "max_leads_per_rule: leads investigated per decision rule (the others are listed in the report, reason 'rule quota'), so that a broad rule cannot take the whole task budget. A rule can set its own max_leads in decision_rules.json.",
+  "max_leads_per_rule": 5
  },
+ "_doc_challenge_profile": "challenge_profile: profile (above) used for the challenge tasks of the hypotheses, e.g. another model than the analysis: the hypotheses are then reviewed by a model that did not write them. Empty = the active profile.",
+ "challenge_profile": "",
  "report": {
   "_doc": "Defaults of the cover page, header and footer of the Word report. Put your own values in <root>\\pipeline\\local\\report.json (same keys, never overwritten by an update; see local\\report_example.json). Empty values: title = 'Forensic analysis' + main host, client = case name, subtitle = first sentence of the verdict, prepared_by = Sleuthline. logo (header) and cover_image (cover background, A4 portrait, 1240 x 1754 px): image files, path relative to local\\. investigator and about are optional.",
   "template": "",
