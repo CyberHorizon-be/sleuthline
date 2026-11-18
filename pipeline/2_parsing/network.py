@@ -210,7 +210,7 @@ def run_capture(cmd: list[str], log_dir: Path, out_dir: Path, capture_name: str,
     text = p.stdout.decode("utf-8", "replace")
     if p.returncode != 0:
         if p.returncode in (-1073741515, 3221225781):     # 0xC0000135: DLL not found (Windows)
-            text += "\nSuricata cannot start: a DLL is missing (Npcap / wpcap.dll). Install Npcap, see the README.\n"
+            text += "\nSuricata cannot start: a DLL is missing (Npcap / wpcap.dll). Install Npcap, see docs\\installation.md in the repository.\n"
         raise RuntimeError(f"Suricata exit code {p.returncode}: {text.strip()[-800:]}")
     eve = log_dir / "eve.jsonl"
     if not eve.is_file():

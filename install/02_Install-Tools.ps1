@@ -1231,7 +1231,7 @@ try {
         $manifest.lock_check = [ordered]@{ compliant = ($diffs.Count -eq 0); differences = $diffs }
         if ($diffs) {
             foreach ($d in $diffs) { Write-Warn $d }
-            Write-Warn "Differences: EZTools and rules can only be downloaded in their latest version. For an exact reproduction, restore an archive of $ToolsDir (see README)."
+            Write-Warn "Differences: EZTools and rules can only be downloaded in their latest version. For an exact reproduction, restore an archive of $ToolsDir (see docs\development.md, Reproducibility)."
         } else { Write-Ok 'Installation compliant with the lock' }
     }
     ($manifest | ConvertTo-Json -Depth 6) | Set-Content -Path $manifestPath -Encoding UTF8
