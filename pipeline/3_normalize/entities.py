@@ -30,7 +30,7 @@ NAME_EXT = r"exe|dll|sys|scr|com|cpl|msi|ps1|psm1|bat|cmd|vbs|vbe|js|jse|wsf|hta
 # Always common, whatever their count
 COMMON = {("account", "system"), ("account", "local service"), ("account", "network service"), ("sid", "s-1-5-18"),
           ("sid", "s-1-5-19"), ("sid", "s-1-5-20"), ("ip", "127.0.0.1"), ("ip", "0.0.0.0"), ("ip", "255.255.255.255"),
-          ("account", "-"), ("account", "n/a")}
+          ("account", "-"), ("account", "n/a"), ("ip", "::1"), ("ip", "::")}
 COMMON_MIN_REFS = 500            # an entity with more refs than this and than COMMON_SHARE of all refs is common
 COMMON_SHARE = 0.005
 
@@ -39,6 +39,9 @@ _PATH_SQL = r"""lower(regexp_replace(regexp_replace(regexp_replace(regexp_replac
     '^\\\\\?\\', ''), '^(\\Device\\HarddiskVolume\d+|\\\?\?\\[A-Za-z]:|[A-Za-z]:|%systemdrive%)', '', 'i'),
     '^%(systemroot|windir)%', '\\Windows', 'i'), '\\+', '\\', 'g'))"""
 IP_RX = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}"
+# IPv6: full (8 groups) or compressed (with ::); filtered after extraction so that times (12:30:45) and MAC addresses
+# (aa:bb:cc:dd:ee:ff) are not taken for addresses
+IP6_RX = r"(?i)(?:^|[^0-9a-f:.])((?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{0,4}::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{0,4})(?:[^0-9a-f:.]|$)"
 
 
 def norm_path(p: str) -> str:
@@ -63,7 +66,7 @@ def guess_type(value: str) -> list[str]:
     v = str(value).strip()
     if re.fullmatch(r"(?i)[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}", v):
         return ["hash"]
-    if re.fullmatch(IP_RX, v):
+    if re.fullmatch(IP_RX, v) or (":" in v and re.fullmatch(r"(?i)[0-9a-f:]+", v) and ("::" in v or v.count(":") == 7)):
         return ["ip"]
     if re.match(r"(?i)https?://", v):
         return ["url"]
@@ -119,6 +122,12 @@ def build(con, multi: bool = False, log=print) -> dict:
                      ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL)""",
         f"""SELECT 'ip', path, path, ref, ts, host, host_id, artifact, 'ip' FROM _src
             WHERE path IS NOT NULL AND regexp_full_match(path, '{IP_RX}')""",
+        f"""SELECT 'ip', lower(ip), ip, ref, ts, host, host_id, artifact, 'ip' FROM
+             (SELECT unnest(regexp_extract_all(description, '{IP6_RX}', 1)) AS ip,
+                     ref, ts, host, host_id, artifact FROM _src WHERE description IS NOT NULL AND contains(description, ':'))
+            WHERE length(ip) >= 3 AND ip <> '::' AND regexp_matches(ip, '[0-9a-fA-F]')
+              AND (contains(ip, '::') OR length(ip) - length(replace(ip, ':', '')) = 7)
+              AND NOT regexp_full_match(ip, '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}')""",
         # URLs and their domain
         """SELECT 'url', lower(u), u, ref, ts, host, host_id, artifact, 'url' FROM
              (SELECT unnest(regexp_extract_all(description, '(?i)(https?://[^\\s"''<>|]+)', 1)) AS u,

@@ -1375,7 +1375,8 @@ class TestEntityGraph(unittest.TestCase):
         con.execute("INSERT INTO timeline VALUES (300, TIMESTAMP '2023-11-10 11:03:30', 'flow', 'Network flows (Suricata)', "
                     "'network', 'Suricata', NULL, NULL, '203.78.103.109', 'TCP 10.42.85.115:50875 -> 203.78.103.109:443 GET "
                     "http://194.61.24.102/coreupdater.exe SHA256=10f3b92002bb98467334161cf85d0b1730851f9256f83c27db125e9a0c1cfda6 "
-                    "FTK v4.2.1.4', NULL, 'flow', 'suricata/f.jsonl', 1, NULL, 'validated', 'suricata/f.jsonl#1')")
+                    "FTK v4.2.1.4 src6 fe80::1c2d:3e4f:5a6b:7c8d at 11:03:30 mac aa:bb:cc:dd:ee:ff', NULL, 'flow', 'suricata/f.jsonl', 1, NULL, "
+                    "'validated', 'suricata/f.jsonl#1')")
         entities.build(con, log=lambda *a: None)
         con.close()
         return case
@@ -1399,6 +1400,8 @@ class TestEntityGraph(unittest.TestCase):
             self.assertIn(("ip", "203.78.103.109"), ents)
             self.assertIn(("url", "http://194.61.24.102/coreupdater.exe"), ents)
             self.assertNotIn(("ip", "4.2.1.4"), ents)                    # version number, not an address
+            self.assertIn(("ip", "fe80::1c2d:3e4f:5a6b:7c8d"), ents)          # IPv6
+            self.assertFalse([k for k in ents if k[0] == "ip" and k[1] in ("11:03:30", "aa:bb:cc:dd:ee:ff")])
             self.assertIn(("account", "bob"), ents)
             eid = con.execute("SELECT entity_id FROM entities WHERE type = 'filename' AND norm = 'evil.exe'").fetchone()[0]
             self.assertRegex(eid, r"^E[0-9a-f]{12}$")
@@ -1573,9 +1576,9 @@ class TestHypotheses(unittest.TestCase):
         h = {"id": "H-001", "statement": "s", "links": [{"finding": "F-001", "relation": "supports"}], "challenge_lead": "L-001"}
         ev = analyze.decision.evaluate_hypothesis
         self.assertEqual(ev(dict(h), fs, {}, pol, guards.independent_sources)["confidence"], "probable")       # challenge not run
-        done = {"L-001": {"id": "L-001", "status": "done", "outcome": "refuted"}}
+        done = {"L-001": {"id": "L-001", "status": "done", "outcome": "no_contradiction"}}
         self.assertEqual(ev(dict(h), fs, done, pol, guards.independent_sources)["confidence"], "confirmed")
-        found = {"L-001": {"id": "L-001", "status": "done", "outcome": "confirmed", "summary": "admin did it"}}
+        found = {"L-001": {"id": "L-001", "status": "done", "outcome": "contradiction_found", "summary": "admin did it"}}
         self.assertEqual(ev(dict(h), fs, found, pol, guards.independent_sources)["status"], "contested")
         weak = {"id": "H-002", "statement": "s", "links": [{"finding": "F-003", "relation": "supports"}]}
         r = ev(weak, fs, {}, pol, guards.independent_sources)
@@ -1606,7 +1609,9 @@ class TestHypotheses(unittest.TestCase):
                                                                     "supports": ["F-002"], "contradicts": ["F-003"]}},
                                 {"name": "add_hypothesis", "args": {"statement": "x", "supports": ["F-099"]}},
                                 {"name": "step_complete", "args": {"summary": "correlation"}}]},
-                {"tool_calls": [{"name": "task_complete", "args": {"outcome": "refuted", "summary": "no legitimate use found"}}]},
+                # "confirmed" is refused in a challenge (its words answer "is there a contradiction?")
+                {"tool_calls": [{"name": "task_complete", "args": {"outcome": "confirmed", "summary": "hypothesis confirmed"}},
+                                {"name": "task_complete", "args": {"outcome": "no_contradiction", "summary": "no legitimate use found"}}]},
                 {"tool_calls": [{"name": "step_complete", "args": {"summary": "summary"}}]},
             ]
             (Path(d) / "script.json").write_text(json.dumps(script), encoding="utf-8")
@@ -1622,7 +1627,9 @@ class TestHypotheses(unittest.TestCase):
             self.assertEqual((h["H-001"]["status"], h["H-001"]["confidence"]), ("supported", "confirmed"))
             self.assertEqual(h["H-002"]["status"], "refuted")
             ch = next(x for x in st["leads"] if x["source"] == "challenge")
-            self.assertEqual((ch["origin"], ch["status"], ch["outcome"]), ("H-001", "done", "refuted"))
+            self.assertEqual((ch["origin"], ch["status"], ch["outcome"]), ("H-001", "done", "no_contradiction"))
+            tr = [json.loads(l) for l in (case / "analysis" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(next(r for r in tr if r.get("name") == "task_complete")["result"].startswith("ERROR: outcome must be one of"))
             self.assertEqual(st["steps"]["3"]["summary"], "summary")          # summary after the challenge
             self.assertEqual(st["usage"]["calls"], 4)
             import zipfile
@@ -1633,6 +1640,80 @@ class TestHypotheses(unittest.TestCase):
                 self.assertIn("Execution of EVIL.EXE by bob", z.read(svg[0]).decode("utf-8"))
             for text in ("Attack path", "Hypotheses", "EVIL.EXE came from a USB key", "refuted", "svgBlip"):
                 self.assertIn(text, xml)
+
+
+
+class TestDecisionAudit(unittest.TestCase):
+    """Audit of 2.0 (November 2026): interrupted tasks resumed, rule leads deduplicated on their subject, challenges
+    opened by a later supporting finding, at depth 1, and again after a contradiction."""
+
+    def test_interrupted_task_is_run_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            (case / "analysis").mkdir()
+            st = analyze.State(case / "analysis" / "findings.json")
+            st.d["leads"] = [{"id": "L-001", "question": "Q?", "reason": "r", "priority": "high", "source": "agent", "origin": "1",
+                              "depth": 1, "refs": [], "entities": [], "status": "running", "created": "t"}]
+            st.d["steps"] = {"1": {"status": analyze.DONE, "title": "Execution"}}
+            st.save()
+            (Path(d) / "script.json").write_text(json.dumps([
+                {"tool_calls": [{"name": "task_complete", "args": {"outcome": "refuted", "summary": "checked"}}]}]), encoding="utf-8")
+            cfg = {"active": "mock", "profiles": {"mock": {"provider": "mock", "model": "mock", "script": str(Path(d) / "script.json")}}}
+            (Path(d) / "cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
+            pb = Path(d) / "PLAYBOOK.md"
+            pb.write_text("# P\n\n## Rules\n\n1. Facts.\n\n## Step 1: Execution\n\nLook.\n", encoding="utf-8")
+            self.assertEqual(analyze.main([str(case), "--config", str(Path(d) / "cfg.json"), "--playbook", str(pb), "--no-report"]), 0)
+            lead = json.loads((case / "analysis" / "findings.json").read_text(encoding="utf-8"))["leads"][0]
+            self.assertEqual((lead["status"], lead["outcome"]), ("done", "refuted"))
+
+    def test_rule_leads_deduplicated_on_subject(self):
+        rules = [r for r in analyze.decision.load_rules(PIPE / "config" / "decision_rules.json") if r["id"] == "persistence-origin"]
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            sys.path.insert(0, str(PIPE / "3_normalize"))
+            import entities
+            con = duckdb.connect(str(case / "db" / "case.duckdb"))
+            entities.build(con, log=lambda *a: None)
+            con.close()
+            db = analyze.CaseDB(case / "db" / "case.duckdb", analyze.DEFAULT_LIMITS)
+            st = analyze.State(Path(d) / "f.json")
+            # two findings on the same EVIL.EXE (Prefetch, 4688): same subject -> one lead with both origins
+            st.d["findings"] += [{"id": "F-001", "title": "Service EVIL", "severity": "high", "description": "7045 new service",
+                                  "evidence": [{"ref": "prefetch/p.csv#1"}]},
+                                 {"id": "F-002", "title": "Run key EVIL", "severity": "high", "description": "run key",
+                                  "evidence": [{"ref": "evtx/e.csv#1"}]}]
+            leads = analyze.decision.Leads(st)
+            made = analyze.decision.evaluate_rules(rules, st, db, leads, 1, "t", log=lambda *a: None)
+            self.assertEqual(len(made), 1)
+            self.assertEqual((made[0]["origin"], made[0]["also"]), ("F-001", ["F-002"]))
+
+    def test_challenge_from_a_later_link_and_again_after_a_contradiction(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            db = analyze.CaseDB(case / "db" / "case.duckdb", analyze.DEFAULT_LIMITS)
+            st = analyze.State(Path(d) / "f.json")
+            st.d["findings"] += [{"id": "F-001", "title": "a", "severity": "low", "confidence": "confirmed", "evidence": []},
+                                 {"id": "F-002", "title": "b", "severity": "high", "confidence": "confirmed", "evidence": []},
+                                 {"id": "F-003", "title": "c", "severity": "critical", "confidence": "confirmed", "evidence": []}]
+            agent = analyze.Agent(case, db, st, None, dict(analyze.DEFAULT_LIMITS), {"questions": []}, "", lambda *a: None,
+                                  Path(d) / "t.jsonl")
+            agent.current_depth = 3                                  # inside a deep task
+            agent.t_add_hypothesis("H on a low finding", ["F-001"])
+            h = st.d["hypotheses"][0]
+            self.assertNotIn("challenge_lead", h)                     # low severity: no challenge
+            agent.t_link_hypothesis("H-001", "F-002", "supports")      # a high finding linked later
+            ch = next(x for x in st.d["leads"] if x["id"] == h["challenge_lead"])
+            self.assertEqual((ch["source"], ch["depth"]), ("challenge", 1))
+            ch.update(status="done", outcome="contradiction_found", summary="admin")
+            agent.refresh_hypotheses()
+            self.assertEqual(h["status"], "contested")
+            agent.t_link_hypothesis("H-001", "F-003", "supports")      # new evidence: second challenge, way out of contested
+            self.assertNotEqual(h["challenge_lead"], ch["id"])
+            self.assertEqual(h["status"], "supported")
+            self.assertEqual(len(h["challenges"]), 2)
 
 
 def snapshot(db: Path) -> dict:
