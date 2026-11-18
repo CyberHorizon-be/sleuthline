@@ -77,7 +77,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 68 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 71 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -269,7 +269,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (68 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (71 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```
@@ -517,6 +517,7 @@ The database is fully rebuilt at each run (written to a temporary file, then rep
 | `artifact_summary` | View: row count and period covered per artifact. |
 | `sources` | Every file of `parsed\`: status (loaded, empty, ignored, error), table, rows, rejected rows, SHA-256. |
 | `coverage` | (1.1) What happened to every kind of artifact, computed from the inventory, the parsing jobs and the loaded tables: `not_collected` (absent from the case), `not_covered` (no installed tool), `not_parsed` (the tool failed or did not run), `empty` (parsed, no record), `analyzed`. The agent must check it before writing that something was not found; the report lists it in an appendix. |
+| `entities`, `entity_refs` | (2.0) Entity graph, computed by the program: every file (path normalized without the drive: `F:\Windows\x.exe` = `\Device\HarddiskVolume3\Windows\x.exe`), file name of an executable / script / archive, hash, IPv4 address, URL, domain, account, SID and host, linked to the records (`ref`) where it appears, from the timeline, the detections and the hash matches. The same entity has the same `entity_id` on every host of a case. `common` flags the entities seen everywhere (`svchost.exe`, `SYSTEM`...). The agent pivots with the `pivot` and `neighbours` tools; the report lists the entities shared by several findings. |
 | `conservation` | (1.1) Checks that nothing was lost silently: records counted in each output file = rows loaded + rows rejected (`file_to_raw`); rows written by Volatility and EVE events of Suricata = rows of their outputs (`tool_to_output`); a mapped table whose dates are present but none understood is a failure (`raw_to_timeline`). Summary at the top of `normalize_report.md` and in the report's traceability appendix. |
 | `jobs`, `meta` | Status of the parsing jobs; normalization parameters (version and SHA-256 of the mapping table, time zone, pipeline version, collection integrity). |
 
@@ -544,7 +545,7 @@ C:\Sleuthline\pipeline\sleuthline.ps1 analyze "C:\Sleuthline\cases\<case>"   # f
 
 **Flow.** The agent follows `pipeline\config\PLAYBOOK.md`, one step per conversation: 1. system context; 2. triage of detections; 3. program execution; 4. memory (RAM); 5. network traffic; 6. persistence; 7. accounts and authentication; 8. remote access and lateral movement; 9. file activity; 10. web browsing; 11. anti-forensics; 12. exfiltration; 13. incident timeline; 14. summary. The steps are recommendations (inspired by SANS FOR500/FOR508) and can be edited freely. A step dedicated to one kind of evidence declares it under its title (`Requires: memory` for step 4, `Requires: network` for step 5): when the case does not contain it, the step is recorded as not applicable without calling the model. The other steps always run: every source feeds almost every step (memory holds MFT records, registry and browser traces; a capture holds downloads, Kerberos / SMB and transferred files). The agent is told at the start which sources the case contains.
 
-**Agent tools.** SQL query, search, time window, evidence detail, coverage of the evidence; it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
+**Agent tools.** SQL query, search, time window, evidence detail, coverage of the evidence, `pivot` (every record where a file, hash, IP, URL, domain, account or host appears, with the entities of the same records) and `neighbours` (what else appeared on that host around it); it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
 
 **Guarantees.** They are enforced by the program (`4_analysis\guards.py`), not requested from the model:
 

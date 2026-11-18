@@ -507,6 +507,10 @@ class CaseDB:
             n_hs = self.run("SELECT count(*) FROM hashset", max_rows=1)[1][0][0]
             parts.append(f"Offline hash lists ({n_hs} hashes loaded; table hash_hits):\n"
                          + (format_table(cols, rows, 4000) if rows else "no match in the database"))
+        if self.has_table("entities"):
+            cnt = self.run("SELECT type, count(*) FROM entities WHERE NOT common GROUP BY 1 ORDER BY 1", max_rows=20)[1]
+            parts.append("Entity graph (tables entities, entity_refs; tools pivot and neighbours): "
+                         + ", ".join(f"{t} {n}" for t, n in cnt) + ". Pivot with these tools rather than chaining searches.")
         if self.has_table("coverage"):
             cnt = self.run("SELECT status, count(*) FROM coverage GROUP BY 1 ORDER BY 1", max_rows=10)[1]
             parts.append("Coverage (tool coverage, details with the coverage tool): " + ", ".join(f"{s} {n}" for s, n in cnt))
@@ -608,7 +612,7 @@ class State:
 # ------------------------------------------------------------------------------------------
 # Tools exposed to the model
 # ------------------------------------------------------------------------------------------
-DATA_TOOLS = {"sql_query", "describe_table", "search", "timeline_window", "get_evidence", "hosts"}   # results = case data
+DATA_TOOLS = {"sql_query", "describe_table", "search", "timeline_window", "get_evidence", "hosts", "pivot", "neighbours"}   # results = case data
 REFS = {"type": "array", "items": {"type": "string"}, "description": "evidence references (ref column, or <_src_file>#<_src_row>)"}
 TOOLS = [
     {"name": "sql_query", "description": "Runs a read-only DuckDB SQL query on the case database (one query, with LIMIT). Returns a text table.",
@@ -628,6 +632,20 @@ TOOLS = [
                     "required": ["start", "end"]}},
     {"name": "get_evidence", "description": "Full detail (raw record) of evidence references.",
      "parameters": {"type": "object", "properties": {"refs": REFS}, "required": ["refs"]}},
+    {"name": "pivot", "description": "Entity graph: every record where a file (path or name), hash, IP, URL, domain, account, SID "
+     "or host appears, grouped by host and artifact with first / last time and example references, plus the entities seen "
+     "in the same records (rarest first). Use it to pivot instead of chaining searches. Value or entity_id (E + 12 hex).",
+     "parameters": {"type": "object", "properties": {
+         "value": {"type": "string", "description": "e.g. C:\\Windows\\System32\\x.exe, x.exe, a SHA-256, 10.0.0.5, an account"},
+         "type": {"type": "string", "enum": ["file", "filename", "hash", "ip", "url", "domain", "account", "sid", "host"]},
+         "host": {"type": "string", "description": "multi-host case: only this host"},
+         "include_common": {"type": "boolean", "description": "also list co-occurring entities seen everywhere (default false)"}},
+                    "required": ["value"]}},
+    {"name": "neighbours", "description": "Entity graph: the entities active on the same host within +/- window_s seconds of the "
+     "records of an entity, rarest first (what happened around a file, an IP, an account). Common entities are skipped.",
+     "parameters": {"type": "object", "properties": {
+         "value": {"type": "string"}, "type": {"type": "string"}, "window_s": {"type": "integer", "description": "default 300"},
+         "host": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["value"]}},
     {"name": "hosts", "description": "Multi-host case: the hosts (host_id, real name, sources, time zone, timeline rows, "
      "findings per host so far). Every common table has a host_id column, the raw.* views a _host column, and references "
      "start with '<host_id>:'.",
@@ -797,6 +815,94 @@ class Agent:
 
     def cols_out(self) -> str:
         return ("host_id, " if self.db.multi else "") + "ts, artifact, ts_desc, user_name, path, description, ref"
+
+    # -- entity graph (2.0a) ---------------------------------------------------------------------
+    def find_entity(self, value, type=None):
+        """(entity row, message): exact entity_id, else the normalized value for the given / guessed types."""
+        if not self.db.has_table("entities"):
+            return None, "No entity graph in this database (normalized before 2.0): run normalize again."
+        sys.path.insert(0, str(PIPE / "3_normalize"))
+        import entities as en
+        v = str(value or "").strip()
+        if not v:
+            return None, "ERROR: value is required."
+        cols = "entity_id, type, norm, value, refs, records, artifacts, hosts, first_ts, last_ts, common"
+        if re.fullmatch(r"E[0-9a-f]{12}", v):
+            rows = self.db.run(f"SELECT {cols} FROM entities WHERE entity_id = ?", [v], 1)[1]
+        else:
+            types = [type] if type in en.TYPES else en.guess_type(v)
+            if "file" in types and "filename" not in types and not re.search(r"[\\/]", v.strip("\\/")):
+                types.append("filename")
+            rows = []
+            for t in types:
+                rows += self.db.run(f"SELECT {cols} FROM entities WHERE type = ? AND norm = ?", [t, en.norm_value(t, v)], 5)[1]
+            if not rows:                       # partial value: suggestions
+                sug = self.db.run(f"SELECT {cols} FROM entities WHERE norm ILIKE ?{LIKE_ESCAPE} ORDER BY refs DESC LIMIT 10",
+                                  [like(v.lower())], 10)[1]
+                if not sug:
+                    return None, f"No entity matches {v!r}: the value does not appear in the mapped records (try search)."
+                return None, ("Several entities contain this value, pivot on one of them (entity_id):\n"
+                              + "\n".join(f"  {r[0]}  {r[1]}  {r[2]}  ({r[4]} refs, hosts {r[7]})" for r in sug))
+        if not rows:
+            return None, f"Unknown entity: {v}"
+        if len(rows) > 1:
+            return None, ("Several entities match, pivot on one of them (entity_id):\n"
+                          + "\n".join(f"  {r[0]}  {r[1]}  {r[2]}  ({r[4]} refs)" for r in rows))
+        return dict(zip(cols.split(", "), rows[0])), None
+
+    def t_pivot(self, value, type=None, host=None, include_common=False):
+        ent, msg = self.find_entity(value, type)
+        if not ent:
+            return msg if msg.startswith(("ERROR", "No ", "Unknown", "Several")) else "ERROR: " + msg
+        hcol = "coalesce(host_id, host)" if self.db.multi else "host"
+        cond, params = ["entity_id = ?"], [ent["entity_id"]]
+        if host:
+            cond.append(f"{hcol} ILIKE ?" + LIKE_ESCAPE)
+            params.append(like(host))
+        where = " AND ".join(cond)
+        cols, rows = self.db.run(
+            f"SELECT {hcol} AS host, artifact, count(*) AS records, min(ts) AS first_ts, max(ts) AS last_ts, "
+            f"string_agg(ref, ' ' ORDER BY ts) FILTER (WHERE ref IS NOT NULL) AS refs FROM entity_refs WHERE {where} "
+            "GROUP BY ALL ORDER BY min(ts)", params, 200)
+        rows = [r[:5] + ((" ".join(str(r[5] or "").split()[:4]),)) for r in rows]
+        co_cols, co = self.db.run(
+            "SELECT e.entity_id, e.type, e.value, e.refs AS total_refs, count(DISTINCT r2.ref) AS shared_records "
+            "FROM entity_refs r1 JOIN entity_refs r2 ON r2.ref = r1.ref AND r2.entity_id <> r1.entity_id "
+            f"JOIN entities e ON e.entity_id = r2.entity_id WHERE r1.entity_id = ?"
+            + ("" if include_common else " AND NOT e.common")
+            + " GROUP BY ALL ORDER BY shared_records DESC, total_refs ASC LIMIT 30", [ent["entity_id"]], 30)
+        head = (f"Entity {ent['entity_id']}: {ent['type']} {ent['value']} (normalized {ent['norm']}) - {ent['refs']} reference(s) "
+                f"in {ent['records']} record(s), {ent['artifacts']} artifact(s), hosts {ent['hosts'] or '?'}, "
+                f"{ent['first_ts']} -> {ent['last_ts']}" + (" [COMMON: seen everywhere]" if ent["common"] else ""))
+        return (head + "\n\nWhere it appears (first 4 refs per line):\n"
+                + format_table(cols, rows, self.limits["max_result_chars"] // 2)
+                + "\n\nEntities in the same records:\n" + format_table(co_cols, co, self.limits["max_result_chars"] // 3))
+
+    def t_neighbours(self, value, type=None, window_s=300, host=None, limit=40):
+        ent, msg = self.find_entity(value, type)
+        if not ent:
+            return msg if msg.startswith(("ERROR", "No ", "Unknown", "Several")) else "ERROR: " + msg
+        window = max(1, min(int(window_s or 300), 86400))
+        limit = max(1, min(int(limit or 40), 200))
+        # Multi-host case: same host_id (the case-level captures are their own unit); single host: the whole case
+        # is one machine (network records have no host name), so no host condition
+        multi = self.db.multi
+        cond, params = ["entity_id = ?", "ts IS NOT NULL"], [ent["entity_id"]]
+        if host and multi:
+            cond.append("host_id = ?")
+            params.append(str(host).strip())
+        cols, rows = self.db.run(
+            f"WITH seed AS (SELECT DISTINCT ts, {'host_id' if multi else 'NULL'} AS h FROM entity_refs WHERE {' AND '.join(cond)} "
+            "ORDER BY ts LIMIT 200) "
+            "SELECT e.entity_id, e.type, e.value, e.refs AS total_refs, count(DISTINCT r.ref) AS records_nearby, "
+            "min(r.ts) AS first_nearby, any_value(r.ref) AS example_ref FROM seed s "
+            f"JOIN entity_refs r ON {'r.host_id = s.h AND ' if multi else ''}"
+            f"r.ts BETWEEN s.ts - INTERVAL ({window}) SECOND AND s.ts + INTERVAL ({window}) SECOND "
+            "JOIN entities e ON e.entity_id = r.entity_id "
+            "WHERE r.entity_id <> ? AND NOT e.common GROUP BY ALL "
+            f"ORDER BY total_refs ASC, records_nearby DESC LIMIT {limit}", params + [ent["entity_id"]], limit)
+        return (f"Entities within +/- {window} s of the records of {ent['entity_id']} ({ent['type']} {ent['value']})"
+                + (", same host" if multi else "") + ", rarest first:\n" + format_table(cols, rows, self.limits["max_result_chars"]))
 
     def t_hosts(self):
         if not self.db.multi:

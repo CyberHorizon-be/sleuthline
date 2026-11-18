@@ -612,6 +612,34 @@ def memory_host(db) -> str | None:
     return str(rows[0][0]) if rows else None
 
 
+def finding_links(db, findings: list, limit: int = 40) -> list | None:
+    """2.0a: entities (not common) shared by the evidence of several findings (severity >= low), or present on several
+    hosts. None if the database has no entity graph."""
+    if not has_table(db, "entity_refs"):
+        return None
+    by_ref = defaultdict(set)
+    for f in findings:
+        if f.get("severity") == "info":
+            continue
+        for e in f.get("evidence", []):
+            by_ref[e["ref"]].add(f["id"])
+    if not by_ref:
+        return []
+    rows = db.run("SELECT e.entity_id, e.type, e.value, e.hosts, e.records, r.ref FROM entity_refs r "
+                  "JOIN entities e ON e.entity_id = r.entity_id WHERE NOT e.common AND r.ref IN (SELECT unnest(?))",
+                  [sorted(by_ref)], 100000)[1]
+    ent = {}
+    for eid, typ, value, hosts, records, ref in rows:
+        x = ent.setdefault(eid, {"type": typ, "value": value, "hosts": hosts or "", "records": records or 0, "findings": set()})
+        x["findings"] |= by_ref.get(ref, set())
+    out = [x for x in ent.values() if len(x["findings"]) >= 2 or "," in x["hosts"]]
+    order = {t: i for i, t in enumerate(("hash", "file", "ip", "url", "domain", "filename", "account", "sid", "host"))}
+    out.sort(key=lambda x: (-len(x["findings"]), order.get(x["type"], 9), x["value"]))
+    for x in out:
+        x["findings"] = sorted(x["findings"], key=lambda i: int(re.sub(r"\D", "", i) or 0))
+    return out[:limit]
+
+
 def long_date(d: dt.datetime) -> str:
     return f"{d.day} {d:%B %Y}"
 
@@ -905,6 +933,20 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         R.note("The full list is exported in iocs.csv, with the evidence references of each indicator.")
     else:
         R.para("(no IOC recorded)", italic=True, color=MUTED)
+
+    links = finding_links(db, d["findings"])
+    if links is not None:
+        R.h2("Links between findings")
+        R.para("Files, hashes, addresses, accounts and hosts that appear in the evidence of several findings"
+               + (" or on several hosts" if multi else "") + ". Computed by the program from the entity graph of the case "
+               "(entities seen everywhere, such as svchost.exe or SYSTEM, are left out).", size=18, color=MUTED)
+        if links:
+            R.table(["Entity", "Type", "Findings", "Hosts" if multi else "Records"],
+                    [[Cell(x["value"], mono=True), x["type"], ", ".join(x["findings"]),
+                      x["hosts"] if multi else f"{x['records']:,}"] for x in links],
+                    [4300, 1100, 2700, 1538], valign="top")
+        else:
+            R.para("(no entity shared by two findings)", italic=True, color=MUTED)
 
     # ---- 4. Technical analysis ------------------------------------------------------------------
     R.h1("Technical analysis")
