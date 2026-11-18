@@ -166,3 +166,104 @@ def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: 
     for x in created:
         log(f"  + lead {x['id']} [{x['priority']}] ({x['source']}) {x['question'][:110]}")
     return created
+
+
+# ------------------------------------------------------------------------------------------
+# Hypotheses and counter-evidence (2.0c)
+# ------------------------------------------------------------------------------------------
+RELATIONS = ("supports", "contradicts", "context")
+CONF_ORDER = {"confirmed": 3, "probable": 2, "possible": 1}
+
+
+class Hypotheses:
+    """Hypotheses of the analysis state (state.d['hypotheses']): statements about the attack, linked to findings."""
+
+    def __init__(self, state):
+        self.state = state
+        self.d = state.d
+        self.d.setdefault("hypotheses", [])
+
+    @property
+    def all(self) -> list[dict]:
+        return self.d["hypotheses"]
+
+    def get(self, hid: str) -> dict | None:
+        return next((h for h in self.all if h["id"] == str(hid).strip()), None)
+
+    def next_id(self) -> str:
+        nums = [int(m.group(1)) for h in self.all if (m := re.match(r"H-(\d+)$", h["id"]))]
+        return f"H-{max(nums, default=0) + 1:03d}"
+
+    def add(self, statement: str, tactic: str, step, now: str) -> tuple[dict, bool]:
+        key = norm_question(statement)
+        for h in self.all:
+            if norm_question(h["statement"]) == key:
+                return h, False
+        h = {"id": self.next_id(), "statement": str(statement).strip(), "tactic": str(tactic or "").strip(),
+             "links": [], "step": step, "created": now, "status": "open", "confidence": "possible", "reasons": []}
+        self.all.append(h)
+        return h, True
+
+    @staticmethod
+    def link(h: dict, finding_id: str, relation: str, note: str = "") -> bool:
+        for x in h["links"]:
+            if x["finding"] == finding_id and x["relation"] == relation:
+                return False
+        h["links"].append({"finding": finding_id, "relation": relation, "note": str(note or "").strip()})
+        return True
+
+
+def evaluate_hypothesis(h: dict, findings: dict, leads: dict, policy: dict, independent_sources) -> dict:
+    """Status and retained confidence of a hypothesis, enforced by the program (like the evidence policy):
+      refuted    : a contradicting finding is confirmed;
+      contested  : its challenge task established a contradiction not (yet) confirmed by a finding;
+      open       : no supporting finding;
+      supported  : confirmed only with >= min_independent_sources independent sources among the supporting findings,
+                   no unresolved contradiction, and - when a supporting finding is critical / high - its challenge task
+                   run without finding a contradiction (outcome refuted); probable otherwise."""
+    sup = [findings[x["finding"]] for x in h["links"] if x["relation"] == "supports" and x["finding"] in findings]
+    con = [findings[x["finding"]] for x in h["links"] if x["relation"] == "contradicts" and x["finding"] in findings]
+    ch = leads.get(h.get("challenge_lead") or "")
+    sources = independent_sources([e for f in sup for e in f.get("evidence", [])])
+    needs_challenge = any(f.get("severity") in policy.get("corroboration_severities", []) for f in sup)
+    reasons = []
+    hosts = sorted({x for f in sup for x in (f.get("hosts") or [])})
+    tss = sorted(t for f in sup for t in (f.get("first_ts"), f.get("last_ts")) if t)
+    if any(f.get("confidence") == "confirmed" for f in con):
+        status, conf = "refuted", "confirmed"
+        reasons.append("contradicted by confirmed finding(s) " + ", ".join(f["id"] for f in con if f.get("confidence") == "confirmed"))
+    elif ch and ch.get("status") == "done" and ch.get("outcome") == "confirmed":
+        status, conf = "contested", "possible"
+        reasons.append(f"its challenge task {ch['id']} established a contradiction: {str(ch.get('summary') or '')[:300]}")
+    elif not sup:
+        status, conf = "open", "possible"
+        reasons.append("no supporting finding")
+    else:
+        status = "supported"
+        ok_sources = len(sources) >= int(policy.get("min_independent_sources", 2))
+        unresolved = [f["id"] for f in con]
+        challenged = (not needs_challenge) or (ch is not None and ch.get("status") == "done" and ch.get("outcome") == "refuted")
+        if ok_sources and not unresolved and challenged:
+            conf = "confirmed"
+        else:
+            conf = "probable"
+            if not ok_sources:
+                reasons.append(f"{len(sources)} independent source(s) among the supporting findings "
+                               f"({policy.get('min_independent_sources', 2)} required)")
+            if unresolved:
+                reasons.append("unresolved contradicting finding(s) " + ", ".join(unresolved))
+            if not challenged:
+                reasons.append("challenge " + (f"{ch['id']} {ch.get('outcome') or ch.get('status')}" if ch else "not run")
+                               + " (a contradiction search with outcome refuted is required)")
+    h.update(status=status, confidence=conf, reasons=reasons, sources=sources, hosts=hosts,
+             first_ts=tss[0] if tss else None, last_ts=tss[-1] if tss else None)
+    return h
+
+
+def challenge_question(h: dict) -> str:
+    return (f"CHALLENGE of {h['id']}: \"{h['statement']}\". What would contradict it: another explanation, a legitimate use "
+            "(administrator, software update, backup, the responder's own tools), the same activity before the incident "
+            "window, another source host or account, a clock offset that reverses the order of events? Look for it in the "
+            "data. Outcome: confirmed = a contradiction IS established (record it as a finding and link it with "
+            "link_hypothesis, relation contradicts); refuted = you looked for it and there is none (say what you checked); "
+            "inconclusive = the data cannot tell.")

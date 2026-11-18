@@ -1559,6 +1559,82 @@ class TestDecisionGraph(unittest.TestCase):
             self.assertEqual(st["usage"]["calls"], 2)                          # step 1 + step 2
 
 
+
+class TestHypotheses(unittest.TestCase):
+    """2.0c: hypotheses linked to findings, challenge tasks, status and confidence computed by the program, report."""
+
+    def test_status_rules(self):
+        pol = guards.load_policy(None)
+        ev2 = [{"artifact": "Prefetch", "ref": "pecmd/p.csv#1"}, {"artifact": "Event logs (EVTX)", "ref": "evtxecmd/e.csv#1",
+                                                                     "evtx_file": "Security.evtx"}]
+        fs = {"F-001": {"id": "F-001", "severity": "critical", "confidence": "confirmed", "evidence": ev2},
+              "F-002": {"id": "F-002", "severity": "low", "confidence": "confirmed", "evidence": ev2},
+              "F-003": {"id": "F-003", "severity": "low", "confidence": "probable", "evidence": ev2[:1]}}
+        h = {"id": "H-001", "statement": "s", "links": [{"finding": "F-001", "relation": "supports"}], "challenge_lead": "L-001"}
+        ev = analyze.decision.evaluate_hypothesis
+        self.assertEqual(ev(dict(h), fs, {}, pol, guards.independent_sources)["confidence"], "probable")       # challenge not run
+        done = {"L-001": {"id": "L-001", "status": "done", "outcome": "refuted"}}
+        self.assertEqual(ev(dict(h), fs, done, pol, guards.independent_sources)["confidence"], "confirmed")
+        found = {"L-001": {"id": "L-001", "status": "done", "outcome": "confirmed", "summary": "admin did it"}}
+        self.assertEqual(ev(dict(h), fs, found, pol, guards.independent_sources)["status"], "contested")
+        weak = {"id": "H-002", "statement": "s", "links": [{"finding": "F-003", "relation": "supports"}]}
+        r = ev(weak, fs, {}, pol, guards.independent_sources)
+        self.assertEqual((r["status"], r["confidence"]), ("supported", "probable"))                          # one source
+        ref = {"id": "H-003", "statement": "s", "links": [{"finding": "F-003", "relation": "supports"},
+                                                          {"finding": "F-002", "relation": "contradicts"}]}
+        self.assertEqual(ev(ref, fs, {}, pol, guards.independent_sources)["status"], "refuted")
+        unres = {"id": "H-004", "statement": "s", "links": [{"finding": "F-002", "relation": "supports"},
+                                                            {"finding": "F-003", "relation": "contradicts"}]}
+        r = ev(unres, fs, {}, pol, guards.independent_sources)
+        self.assertEqual((r["status"], r["confidence"]), ("supported", "probable"))
+        self.assertIn("unresolved contradicting finding(s) F-003", r["reasons"])
+
+    def test_challenge_flow_and_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            f = lambda title, sev, refs: {"name": "add_finding", "args": {"title": title, "severity": sev, "confidence": "confirmed",
+                                                                        "description": "x", "refs": refs}}
+            script = [
+                {"tool_calls": [f("EVIL.EXE executed", "critical", ["prefetch/p.csv#1", "evtx/e.csv#1"]),
+                                {"name": "step_complete", "args": {"summary": "triage"}}]},
+                {"tool_calls": [f("CMD.EXE run once", "low", ["prefetch/p.csv#2"]),
+                                f("EVIL.EXE already in the profile before", "medium", ["prefetch/p.csv#1", "evtx/e.csv#1"]),
+                                {"name": "add_hypothesis", "args": {"statement": "Execution of EVIL.EXE by bob", "tactic": "Execution",
+                                                                    "supports": ["F-001"]}},
+                                {"name": "add_hypothesis", "args": {"statement": "EVIL.EXE came from a USB key", "tactic": "Initial access",
+                                                                    "supports": ["F-002"], "contradicts": ["F-003"]}},
+                                {"name": "add_hypothesis", "args": {"statement": "x", "supports": ["F-099"]}},
+                                {"name": "step_complete", "args": {"summary": "correlation"}}]},
+                {"tool_calls": [{"name": "task_complete", "args": {"outcome": "refuted", "summary": "no legitimate use found"}}]},
+                {"tool_calls": [{"name": "step_complete", "args": {"summary": "summary"}}]},
+            ]
+            (Path(d) / "script.json").write_text(json.dumps(script), encoding="utf-8")
+            cfg = {"active": "mock", "profiles": {"mock": {"provider": "mock", "model": "mock", "script": str(Path(d) / "script.json")}}}
+            (Path(d) / "cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
+            pb = Path(d) / "PLAYBOOK.md"
+            pb.write_text("# P\n\n## Rules\n\n1. Facts.\n\n## Step 1: Execution\n\nLook.\n\n## Step 2: Correlation\nPhase: final\n\n"
+                          "Hypotheses.\n\n## Step 3: Summary\nPhase: final\n\nSummarize.\n", encoding="utf-8")
+            self.assertEqual(analyze.main([str(case), "--config", str(Path(d) / "cfg.json"), "--playbook", str(pb)]), 0)
+            st = json.loads((case / "analysis" / "findings.json").read_text(encoding="utf-8"))
+            h = {x["id"]: x for x in st["hypotheses"]}
+            self.assertEqual(len(h), 2)                                       # the one with an unknown finding is refused
+            self.assertEqual((h["H-001"]["status"], h["H-001"]["confidence"]), ("supported", "confirmed"))
+            self.assertEqual(h["H-002"]["status"], "refuted")
+            ch = next(x for x in st["leads"] if x["source"] == "challenge")
+            self.assertEqual((ch["origin"], ch["status"], ch["outcome"]), ("H-001", "done", "refuted"))
+            self.assertEqual(st["steps"]["3"]["summary"], "summary")          # summary after the challenge
+            self.assertEqual(st["usage"]["calls"], 4)
+            import zipfile
+            with zipfile.ZipFile(next((case / "analysis").glob("report_*.docx"))) as z:
+                xml = z.read("word/document.xml").decode("utf-8")
+                svg = [n for n in z.namelist() if n.endswith(".svg")]
+                self.assertEqual(len(svg), 1)
+                self.assertIn("Execution of EVIL.EXE by bob", z.read(svg[0]).decode("utf-8"))
+            for text in ("Attack path", "Hypotheses", "EVIL.EXE came from a USB key", "refuted", "svgBlip"):
+                self.assertIn(text, xml)
+
+
 def snapshot(db: Path) -> dict:
     con = duckdb.connect(str(db), read_only=True)
     try:

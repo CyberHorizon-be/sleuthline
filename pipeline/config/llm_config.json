@@ -78,7 +78,9 @@
   "max_tool_calls_per_triage_step": 30,
   "max_tool_calls_per_task": 15,
   "max_tasks": 30,
-  "max_lead_depth": 3
+  "max_lead_depth": 3,
+  "_doc_challenge": "max_challenge_tasks: challenge tasks (search for counter-evidence of the hypotheses backed by a critical or high finding), counted apart from max_tasks.",
+  "max_challenge_tasks": 10
  },
  "report": {
   "_doc": "Defaults of the cover page, header and footer of the Word report. Put your own values in <root>\\pipeline\\local\\report.json (same keys, never overwritten by an update; see local\\report_example.json). Empty values: title = 'Forensic analysis' + main host, client = case name, subtitle = first sentence of the verdict, prepared_by = Sleuthline. logo (header) and cover_image (cover background, A4 portrait, 1240 x 1754 px): image files, path relative to local\\. investigator and about are optional.",

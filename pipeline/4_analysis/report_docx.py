@@ -27,6 +27,7 @@ from docx import Document
 from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 
+import figures
 from guards import shown_confidence
 
 SEV_LABEL = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Informational"}
@@ -413,6 +414,37 @@ class Report:
     def kv(self, pairs, headers=("Item", "Detail"), widths=(2800, 6838)):
         self.table(list(headers) if headers else None, [[k, v] for k, v in pairs], list(widths), first_col_bold=True)
 
+    # ---- figures -------------------------------------------------------------------------
+    def figure(self, svg: str, width: int, height: int, caption: str, width_cm: float = 17.0):
+        """SVG figure (Word 2016+ / 365), with a blank PNG fallback for older readers; caption below, like the template."""
+        import io
+        from docx.opc.constants import RELATIONSHIP_TYPE as RT
+        from docx.opc.packuri import PackURI
+        from docx.opc.part import Part
+        self.n_fig = getattr(self, "n_fig", 0) + 1
+        png_rid, _ = self.doc.part.get_or_add_image(io.BytesIO(figures.blank_png(width // 4, height // 4)))
+        svg_part = Part(PackURI(f"/word/media/sleuthline_fig{self.n_fig}.svg"), "image/svg+xml", svg.encode("utf-8"),
+                        self.doc.part.package)
+        svg_rid = self.doc.part.relate_to(svg_part, RT.IMAGE)
+        cx = int(width_cm * 360000)
+        cy = int(cx * height / width)
+        ns = ('xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+              'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+              'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" '
+              'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"')
+        self.add(f'<w:p {W_NS} {ns}><w:pPr><w:keepNext/><w:spacing w:before="120" w:after="60"/><w:jc w:val="center"/></w:pPr>'
+                 f'<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/>'
+                 f'<wp:docPr id="{5000 + self.n_fig}" name="Figure {self.n_fig}"/><wp:cNvGraphicFramePr>'
+                 '<a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData '
+                 'uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr>'
+                 f'<pic:cNvPr id="{5000 + self.n_fig}" name="sleuthline_fig{self.n_fig}.svg"/><pic:cNvPicPr/></pic:nvPicPr>'
+                 f'<pic:blipFill><a:blip r:embed="{png_rid}"><a:extLst><a:ext uri="{{96DAC541-7B7A-43D3-8B79-37D633B846F1}}">'
+                 f'<asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" r:embed="{svg_rid}"/>'
+                 '</a:ext></a:extLst></a:blip><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm>'
+                 f'<a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+                 '</pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>')
+        self.para(f"Figure {self.n_fig}. {caption}", size=17, color=MUTED, italic=True, after=240, center=True)
+
     # ---- table of contents ---------------------------------------------------------------
     def contents_page(self):
         self.p(run("Contents", font="Archivo", color=NAVY, size=40), '<w:spacing w:after="120"/>')
@@ -640,6 +672,24 @@ def finding_links(db, findings: list, limit: int = 40) -> list | None:
     return out[:limit]
 
 
+def attack_nodes(d: dict, limit: int = 12) -> list[dict]:
+    """Boxes of the attack path figure: the supported / contested hypotheses in time order, else the key events."""
+    hyps = [h for h in d.get("hypotheses") or [] if h.get("status") in ("supported", "contested")]
+    if hyps:
+        hyps = sorted(hyps, key=lambda h: (h.get("first_ts") or "~", h["id"]))[:limit]
+        return [{"id": h["id"], "title": h["statement"], "when": short_ts(h.get("first_ts") or "") + (" UTC" if h.get("first_ts") else ""),
+                 "hosts": h.get("hosts") or [], "status": h.get("status"), "confidence": h.get("confidence"),
+                 "label": (h.get("tactic") or h.get("status") or "").capitalize()[:30]} for h in hyps]
+    evs = sorted(d.get("timeline_events") or [], key=lambda e: e.get("ts") or "")
+    if len(evs) < 2:
+        return []
+    if len(evs) > limit:                        # keep the first and last, spread the others
+        step = (len(evs) - 1) / (limit - 1)
+        evs = [evs[round(i * step)] for i in range(limit)]
+    return [{"id": e["id"], "title": e["title"], "when": short_ts(e.get("ts")) + " UTC", "hosts": e.get("hosts") or [],
+             "status": "event", "label": (e.get("phase") or "event").capitalize()[:30]} for e in evs]
+
+
 def not_investigated(d: dict) -> list[tuple[dict, str]]:
     """Leads not investigated, with the reason (bound reached, opened after the tasks, partial or interrupted run)."""
     ended = d.get("tasks_ended") or ""
@@ -839,6 +889,15 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
              ("Findings.", f"{len(d['findings'])} ({sev_counts}), {len(events)} key timeline events, {len(d['iocs'])} indicators of "
                            f"compromise."),
              ("Incident window.", f"{period(win.get('start'), win.get('end'))} UTC.")]
+    hyps = d.get("hypotheses") or []
+    if hyps:
+        hc = defaultdict(int)
+        for h in hyps:
+            hc["refuted" if h.get("status") == "refuted" else "contested" if h.get("status") == "contested"
+               else h.get("confidence") if h.get("status") == "supported" else "open"] += 1
+        brief.append(("Hypotheses.", ", ".join(f"{hc[k]} {k}" for k in ("confirmed", "probable", "possible", "contested",
+                                                                       "refuted", "open") if hc[k])
+                      + " (section 3, challenged against counter-evidence)."))
     if guidance.get("questions"):
         brief.append(("Questions.", f"{len(d['answers'])} of {len(guidance['questions'])} answered (section 5)."))
     R.callout(brief)
@@ -859,6 +918,38 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
 
     # ---- 3. Incident overview -------------------------------------------------------------------
     R.h1("Incident overview")
+    nodes = attack_nodes(d)
+    if nodes:
+        R.h2("Attack path")
+        svg, w, h_ = figures.attack_graph_svg(nodes)
+        R.figure(svg, w, h_, ("Stages of the attack established by the analysis (hypotheses), in time order; "
+                              "the status and the confidence are computed by the program." if hyps else
+                              "Key events of the incident, in time order.") + " Times in UTC.")
+    if hyps:
+        R.h2("Hypotheses")
+        R.para("Each stage of the attack is a hypothesis linked to the findings that support or contradict it. Status and "
+               "confidence are computed by the program: confirmed needs at least two independent sources, no unresolved "
+               "contradiction and, for a critical or high stage, a challenge task that looked for counter-evidence and found "
+               "none. Refuted hypotheses are kept: they show the alternatives that were tested.", size=18, color=MUTED)
+        leads_by = {x["id"]: x for x in d.get("leads") or []}
+        rows = []
+        for h in sorted(hyps, key=lambda h: (h.get("status") == "refuted", h.get("first_ts") or "~", h["id"])):
+            ch = leads_by.get(h.get("challenge_lead") or "")
+            col = (ORANGE if h.get("status") in ("contested", "refuted") else NAVY if h.get("confidence") == "confirmed"
+                   else "D9822B")
+            sup = ", ".join(x["finding"] for x in h["links"] if x["relation"] == "supports")
+            con = ", ".join(x["finding"] for x in h["links"] if x["relation"] == "contradicts")
+            chal = ("not required" if not h.get("challenge_lead") else
+                    f"{ch['id']}: {ch.get('outcome') or ch.get('status')}" if ch else "-")
+            rows.append([Cell(h["id"], bold=True),
+                         Cell(h["statement"], sub=" · ".join(x for x in (h.get("tactic"), ", ".join(h.get("hosts") or []),
+                                                                          period(h.get("first_ts"), h.get("last_ts")) if h.get("first_ts") else "")
+                                                             if x) or None),
+                         Cell(f"{h.get('status')}\n{h.get('confidence')}", bold=True, color=col,
+                              sub="; ".join(h.get("reasons") or []) or None),
+                         Cell(f"for: {sup or '-'}\nagainst: {con or '-'}"),
+                         Cell(chal, sub=(str(ch.get("summary") or "")[:300] or None) if ch else None)])
+        R.table(["ID", "Hypothesis", "Status", "Findings", "Challenge"], rows, [700, 3400, 1900, 1500, 2138], size=15, valign="top")
     R.h2("Attack timeline")
     R.para("Key events established by the analysis, in UTC. The evidence of each event is listed in the appendix "
            "\"Evidence timeline\"; the complete timeline of the incident window (all artifacts) is provided in "
