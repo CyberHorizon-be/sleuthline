@@ -118,18 +118,19 @@ def finding_text(f: dict) -> str:
 SPECIFIC_TYPES = ("file", "hash", "ip", "url", "domain")
 
 
-def specific_entities(db, refs: list) -> set:
-    """Entities of these records that identify the subject of a lead (not common, not account / host / file name)."""
+def specific_entities(db, refs: list) -> list:
+    """Entities of these records that identify the subject of a lead (not common, not account / host / file name),
+    rarest first (fewest references in the case): the best seeds for a task."""
     if not refs or not db.has_table("entity_refs"):
-        return set()
-    rows = db.run("SELECT DISTINCT e.entity_id FROM entity_refs r JOIN entities e ON e.entity_id = r.entity_id "
+        return []
+    rows = db.run("SELECT e.entity_id, min(e.refs) FROM entity_refs r JOIN entities e ON e.entity_id = r.entity_id "
                   f"WHERE NOT e.common AND e.type IN ({', '.join(repr(t) for t in SPECIFIC_TYPES)}) "
-                  "AND r.ref IN (SELECT unnest(?))", [list(refs)], 1000)[1]
-    return {r[0] for r in rows}
+                  "AND r.ref IN (SELECT unnest(?)) GROUP BY 1 ORDER BY 2, 1", [list(refs)], 1000)[1]
+    return [r[0] for r in rows]
 
 
 def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: str, data_rules: bool = False,
-                   log=print) -> list[dict]:
+                   log=print, max_leads_per_rule: int = 5) -> list[dict]:
     """Opens the leads of the rules that fire. Finding / IOC rules: on findings and IOCs not yet evaluated by the
     rule. Timeline rules (data_rules=True, once after the triage): on the whole database."""
     created = []
@@ -139,7 +140,7 @@ def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: 
         prio = r.get("priority", "medium")
         if r["kind"] == "finding":
             min_sev = SEV_RANK.get(r.get("min_severity", "low"), 1)
-            for f in state.d["findings"]:
+            for f in sorted(state.d["findings"], key=lambda f: -SEV_RANK.get(f.get("severity"), 0)):
                 key = f"{r['id']}|{f['id']}"
                 if key in hits or SEV_RANK.get(f.get("severity"), 0) < min_sev:
                     continue
@@ -149,7 +150,7 @@ def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: 
                     hosts = f.get("hosts") or []
                     frefs = [e["ref"] for e in f.get("evidence", [])]
                     ents = specific_entities(db, frefs)
-                    same = leads.same_rule_lead(f"rule:{r['id']}", frefs, ents)
+                    same = leads.same_rule_lead(f"rule:{r['id']}", frefs, set(ents))
                     if same:                       # same subject: one lead, several origins
                         same.setdefault("also", [])
                         if f["id"] not in same["also"] and f["id"] != same.get("origin"):
@@ -160,7 +161,7 @@ def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: 
                         f"rule {r['id']} on {f['id']}", prio, f"rule:{r['id']}", f["id"], depth,
                         refs=frefs[:8], host=hosts[0] if len(hosts) == 1 else None, now=now)
                     if new:
-                        lead["entity_ids"] = sorted(ents)[:50]
+                        lead["entity_ids"] = ents[:50]
                         created.append(lead)
         elif r["kind"] == "ioc":
             if not db.has_table("entity_refs"):
@@ -182,6 +183,7 @@ def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: 
                     fill(r["question"], ioc_type=i["type"], ioc_value=i["value"], extra=len(extra), hosts=", ".join(hosts) or "-"),
                     f"rule {r['id']} on {i['id']}", prio, f"rule:{r['id']}", i["id"], depth, refs=extra[:10], now=now)
                 if new:
+                    lead["entity_ids"] = specific_entities(db, extra[:50])[:50]
                     created.append(lead)
         elif r["kind"] == "timeline" and data_rules:
             key = f"{r['id']}|data"
@@ -197,8 +199,18 @@ def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: 
                                        sample_refs=", ".join(refs[:4])),
                                   f"rule {r['id']} on the data", prio, f"rule:{r['id']}", None, depth, refs=refs[:10], now=now)
             if new:
+                lead["entity_ids"] = specific_entities(db, refs[:50])[:50]
                 created.append(lead)
     state.d["rule_hits"] = sorted(hits)
+    # Quota per rule: a broad rule cannot take the whole task budget. Leads beyond it are kept, not investigated,
+    # with the reason (the most severe origins first: they were opened in that order within one evaluation).
+    for x in created:
+        rule_id = x["source"][5:]
+        quota = int(next((r.get("max_leads", max_leads_per_rule) for r in rules if r["id"] == rule_id), max_leads_per_rule))
+        n = sum(1 for y in leads.all if y["source"] == x["source"] and y["status"] != "duplicate" and y is not x
+                and not y.get("not_investigated", "").startswith("rule quota") and leads.all.index(y) < leads.all.index(x))
+        if quota and n >= quota:
+            x["status"], x["not_investigated"] = "not_investigated", f"rule quota ({quota} leads per rule)"
     for x in created:
         log(f"  + lead {x['id']} [{x['priority']}] ({x['source']}) {x['question'][:110]}")
     return created

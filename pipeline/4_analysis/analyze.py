@@ -61,7 +61,14 @@ DECISION_RULES = CONFIG_DIR / "decision_rules.json"
 KEYS_FILE = CONFIG_DIR / "api_keys.txt"
 DEFAULT_LIMITS = {"max_tool_calls_per_step": 40, "max_result_chars": 15000, "max_rows": 200,
                   "keep_full_results": 12, "query_timeout_s": 120, "max_billed_tokens_per_run": 0,
-                  "max_context_tokens_per_step": 180000, **decision.DEFAULT_BOUNDS, "max_challenge_tasks": 10}
+                  "max_context_tokens_per_step": 180000, **decision.DEFAULT_BOUNDS, "max_challenge_tasks": 10,
+                  "max_leads_per_rule": 5}
+# analyze --unbounded: test run "as far as it goes". No token budget, no rule quota, bounds raised far above what a case
+# needs; the analysis ends when no lead is left open. Finite ceilings remain only as a guard against a loop (a lead
+# that keeps opening leads). max_context_tokens_per_step is kept: it protects the context window of the model.
+UNBOUNDED_LIMITS = {"max_billed_tokens_per_run": 0, "max_tool_calls_per_step": 150, "max_tool_calls_per_triage_step": 150,
+                    "max_tool_calls_per_task": 60, "max_tasks": 500, "max_lead_depth": 8, "max_challenge_tasks": 200,
+                    "max_leads_per_rule": 0}
 # After the tool-call limit or the context limit of a step, only these tools still run (record, then end the step)
 RECORD_TOOLS = {"add_finding", "add_evidence", "add_timeline_event", "add_ioc", "answer_question", "note", "set_summary",
                 "set_recommendations", "step_complete", "add_lead", "task_complete", "add_hypothesis", "link_hypothesis"}
@@ -117,8 +124,12 @@ def load_config(path: Path, profile: str | None):
         raise SystemExit(f"Profile '{name}' missing from {path} (profiles: {', '.join(profiles)})")
     limits = {**DEFAULT_LIMITS, **cfg.get("limits", {}), "evidence_policy": guards.load_policy(cfg.get("evidence_policy"))}
     lang = str(cfg.get("report_language") or "en").strip()
+    ch = str(cfg.get("challenge_profile") or "").strip()
+    if ch and ch not in profiles:
+        raise SystemExit(f"challenge_profile '{ch}' missing from {path} (profiles: {', '.join(profiles)})")
     return name, {**profiles[name], "_keys_file": str(KEYS_FILE), "_report_language": lang,
-                  "_report": report_settings(cfg)}, limits
+                  "_report": report_settings(cfg),
+                  "_challenge": ({**profiles[ch], "_name": ch, "_keys_file": str(KEYS_FILE)} if ch and ch != name else None)}, limits
 
 
 def report_settings(cfg: dict) -> dict:
@@ -611,7 +622,7 @@ class State:
                 out.append(f"Step {n}{' on host ' + h if h else ''} ({s.get('title')}): {s['summary'][:1500]}")
         if self.d["findings"]:
             out.append("Recorded findings:\n" + "\n".join(
-                f"  {f['id']} [{f['severity']}/{f['confidence']}]{' {' + ', '.join(f['hosts']) + '}' if f.get('hosts') else ''} "
+                f"  {f['id']} [{f['severity']}/{f.get('confidence', '?')}]{' {' + ', '.join(f['hosts']) + '}' if f.get('hosts') else ''} "
                 f"{f['title']} ({f.get('first_ts') or '?'} → {f.get('last_ts') or '?'}) "
                 f"refs: {', '.join(e['ref'] for e in f['evidence'][:4])}" for f in self.d["findings"]))
         if self.d["timeline_events"]:
@@ -1159,10 +1170,28 @@ class Agent:
             if err:
                 return "REFUSED: " + err
             refs = [e["ref"] for e in ev]
+        ent_list = []                                   # given entities first, then those of the references, rarest first
+        for v in as_list(entities):
+            e, _ = self.find_entity(v)
+            if e and not e.get("common"):
+                ent_list.append(e["entity_id"])
+        ent_list += [i for i in decision.specific_entities(self.db, refs) if i not in ent_list]
+        ents = set(ent_list)
+        import difflib
+        for x in self.leads.all:
+            if x["source"] != "agent" or x["status"] == "duplicate":
+                continue
+            same_subject = ents and ents & set(x.get("entity_ids") or [])
+            similar = difflib.SequenceMatcher(None, decision.norm_question(question), decision.norm_question(x["question"])).ratio()
+            if same_subject and similar >= 0.5:
+                return (f"OK: close to {x['id']} ({x['status']}): \"{x['question'][:160]}\" - same subject, similar "
+                        "question: not added. Open a lead only for a different question.")
         lead, new = self.leads.add(question, reason, str(priority or "medium").lower(), "agent",
                                    self.current_lead or (str(self.current_step) if self.current_step is not None else None),
                                    self.current_depth, refs=refs, entities=as_list(entities),
                                    host=host or self.current_host, now=now_utc())
+        if new:
+            lead["entity_ids"] = ent_list[:50]
         self.state.save()
         if not new:
             return f"OK: already listed as {lead['id']} ({lead['status']}): not added again."
@@ -1342,12 +1371,51 @@ Instructions: explore the database with the tools, pivot, corroborate. Record ea
                 "add_lead (precise question, reason, priority, seeds) instead of following it to the end now: leads are "
                 "investigated as focused tasks after the triage, highest priority first.")
 
+    def lead_seeds(self, lead: dict) -> list[str]:
+        """Seeds of a task: the entities given with the lead (agent), else the specific entities of its references,
+        rarest first (rule leads: entity_ids, computed from the records that fired the rule)."""
+        if lead.get("entities"):
+            return [str(v) for v in lead["entities"]][:3]
+        ids = lead.get("entity_ids") or decision.specific_entities(self.db, lead.get("refs") or [])
+        return list(ids)[:3]
+
+    def challenge_context(self, lead: dict) -> str:
+        """Fresh context of a challenge: the hypothesis and its own findings only, not the narrative of the analysis."""
+        h = self.hyps.get(lead.get("origin") or "")
+        if not h:
+            return "(hypothesis not found)"
+        fs = {f["id"]: f for f in self.state.d["findings"]}
+        out = [f"HYPOTHESIS {h['id']}: {h['statement']} (tactic: {h.get('tactic') or '-'})"]
+        for x in h["links"]:
+            f = fs.get(x["finding"])
+            if f:
+                out.append(f"  {x['relation']}: {f['id']} [{f['severity']}/{f['confidence']}] {f['title']} "
+                           f"({f.get('first_ts') or '?'} -> {f.get('last_ts') or '?'}) refs: "
+                           + ", ".join(e["ref"] for e in f.get("evidence", [])[:6]))
+        return "\n".join(out)
+
     def task_prompt(self, lead: dict, n: int, total: int) -> str:
         seeds = ""
-        for v in lead.get("entities", [])[:3]:
+        for v in self.lead_seeds(lead):
             seeds += "\n" + self.t_pivot(v)[:3000]
         seeds = self.untrusted.wrap(seeds, "pivot")[0] if seeds else "(none)"
         origin = lead.get("origin") or "-"
+        if lead["source"] == "challenge":
+            return f"""CHALLENGE TASK {lead['id']} ({n} / {total} so far)
+{self.scope_text(lead.get('host'))}
+You are an independent reviewer: you did not write this hypothesis and you are not asked to defend it. Your job is to find
+what would make it wrong, from the data. The rest of the analysis is deliberately not given to you.
+
+{self.challenge_context(lead)}
+
+QUESTION: {lead['question']}
+SEEDS (entity graph):
+{seeds}
+
+Instructions: check the alternatives in the database with the tools (pivot, neighbours, timeline_window, the raw records):
+legitimate use, the same activity before the incident window, another source host or account, a clock offset between
+sources. Record a contradiction you establish as a finding (add_finding) and link it (link_hypothesis, relation
+contradicts). Finish with task_complete: contradiction_found, no_contradiction (say what you checked) or inconclusive."""
         return f"""INVESTIGATION TASK {lead['id']} ({n} / {total} so far; depth {lead['depth']}, priority {lead['priority']})
 {self.scope_text(lead.get('host'))}
 QUESTION: {lead['question']}
@@ -1593,6 +1661,8 @@ def main(argv=None):
     ap.add_argument("--reset", action="store_true", help="start from scratch (findings.json archived)")
     ap.add_argument("--ask", help="one-off question (answer added to the report)")
     ap.add_argument("--report-only", action="store_true", help="regenerate the report without calling the model")
+    ap.add_argument("--unbounded", action="store_true",
+                    help="test run without token budget nor rule quota, bounds raised (see UNBOUNDED_LIMITS); cost not capped")
     ap.add_argument("--classic", action="store_true",
                     help="1.2 flow: every playbook step with the full call budget, no leads nor investigation tasks")
     ap.add_argument("--no-report", action="store_true")
@@ -1617,6 +1687,9 @@ def main(argv=None):
     profile_name, pcfg, limits = load_config(args.config, args.profile)
     classic = bool(args.classic)
     limits["_classic"] = classic
+    if args.unbounded:
+        limits.update(UNBOUNDED_LIMITS)
+        limits["_unbounded"] = True
     db = CaseDB(db_path, limits)
     rules, steps = parse_playbook(args.playbook)
 
@@ -1630,13 +1703,22 @@ def main(argv=None):
             return 2
         log(f"Case: {case}")
         log(f"Model: {provider.describe()} (profile {profile_name}) ; report language: {language_name(pcfg['_report_language'])}")
+        if args.unbounded:
+            log("UNBOUNDED run: no token budget, no rule quota, at most "
+                f"{limits['max_tasks']} tasks, depth {limits['max_lead_depth']}, {limits['max_tool_calls_per_task']} calls per task. "
+                "The cost is not capped: follow it in the log (tokens per step) and stop with Ctrl+C if needed; "
+                "the state is saved, run again without --reset to continue.")
         if pcfg.get("provider") != "mock" and not pcfg.get("base_url", "").startswith(("http://localhost", "http://127.0.0.1")):
             log("Warning: the data queried by the model is sent to its API (external provider).")
-        run = {"started": now_utc(), "profile": profile_name, "provider": pcfg.get("provider"), "model": pcfg.get("model"),
+        run = {"started": now_utc(), "unbounded": bool(args.unbounded), "profile": profile_name, "provider": pcfg.get("provider"), "model": pcfg.get("model"),
                "playbook_sha256": hashlib.sha256(args.playbook.read_bytes()).hexdigest(),
                "guidance_sha256": hashlib.sha256(guidance_path.read_bytes()).hexdigest() if guidance_path.exists() else None}
         agent = Agent(case, db, state, provider, limits, guidance, rules, log, out / "transcript.jsonl",
                       language=pcfg["_report_language"])
+        if pcfg.get("_challenge") and not classic:
+            agent.challenge_provider = make_provider(pcfg["_challenge"])
+            log(f"Challenges of the hypotheses by another model: {pcfg['_challenge']['_name']} "
+                f"({agent.challenge_provider.describe()})")
         overview = db.overview()
         system = agent.system_prompt(overview)
         try:
@@ -1763,7 +1845,8 @@ def run_tasks(agent, state, db, system: str, limits: dict, log) -> None:
             x["status"] = "open"
             log(f"  lead {x['id']}: task interrupted in a previous run, investigated again")
     findings = {f["id"]: f for f in state.d["findings"]}
-    decision.evaluate_rules(rules, state, db, leads, 1, now_utc(), data_rules=True, log=log)
+    quota = int(limits.get("max_leads_per_rule", 5))
+    decision.evaluate_rules(rules, state, db, leads, 1, now_utc(), data_rules=True, log=log, max_leads_per_rule=quota)
     state.save()
     max_tasks, max_depth = int(limits["max_tasks"]), int(limits["max_lead_depth"])
     max_challenges = int(limits.get("max_challenge_tasks", 10))
@@ -1798,14 +1881,20 @@ def run_tasks(agent, state, db, system: str, limits: dict, log) -> None:
         lead.update(status="running", started=now_utc(), task_key=key)
         state.save()
         nf = len(state.d["findings"])
-        u, n, dur = agent.run_conversation(system, agent.task_prompt(lead, done + 1, cap), f"task {lead['id']}",
-                                           final_tool="task_complete", max_calls=int(limits["max_tool_calls_per_task"]))
+        main_provider = agent.provider
+        if challenge and getattr(agent, "challenge_provider", None):
+            agent.provider = agent.challenge_provider      # another model reviews the hypothesis
+        try:
+            u, n, dur = agent.run_conversation(system, agent.task_prompt(lead, done + 1, cap), f"task {lead['id']}",
+                                               final_tool="task_complete", max_calls=int(limits["max_tool_calls_per_task"]))
+        finally:
+            agent.provider = main_provider
         res = agent.step_done or {}
         lead.update(status="done", ended=now_utc(), duration_s=round(dur, 1), tool_calls=n, usage=u,
                     outcome=res.get("outcome") or "inconclusive", summary=res.get("summary", ""), gaps=res.get("gaps", ""))
         state.save()
         log(f"  {lead['outcome']} in {fmt_duration(dur)}: {n} tool calls, {len(state.d['findings']) - nf} finding(s)")
-        decision.evaluate_rules(rules, state, db, leads, lead["depth"] + 1, now_utc(), log=log)
+        decision.evaluate_rules(rules, state, db, leads, lead["depth"] + 1, now_utc(), log=log, max_leads_per_rule=quota)
         agent.refresh_hypotheses()
         state.save()
     agent.current_lead, agent.current_host, agent.current_depth = None, None, 1

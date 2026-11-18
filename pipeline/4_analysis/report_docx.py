@@ -1356,7 +1356,8 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
           ("Data conservation", conservation_text(db) or "not checked (database normalized before 1.1)"),
           ("Model", model),
           ("Agent runs", "\n".join(f"{r.get('started')} – {r.get('ended')}: {r.get('provider')}/{r.get('model')}, "
-                                   f"playbook sha256 {str(r.get('playbook_sha256'))[:16]}…" for r in runs) or "?"),
+                                   f"playbook sha256 {str(r.get('playbook_sha256'))[:16]}…"
+                                   + (" (unbounded test run)" if r.get("unbounded") else "") for r in runs) or "?"),
           ("Usage", f"{usage.get('input_tokens', 0):,} input tokens (of which {usage.get('cache_read_tokens', 0):,} read "
                     f"from cache), {usage.get('output_tokens', 0):,} output tokens, {usage.get('calls', 0)} calls"),
           ("Full trace", str(out / "transcript.jsonl") + ": every SQL query, result and model answer"),
