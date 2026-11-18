@@ -200,6 +200,7 @@ Goal: assemble the findings into a coherent incident timeline.
 - Add each key event with `add_timeline_event`, in order, with its phase (initial access, execution, persistence, privilege escalation, defense evasion, credential access, discovery, lateral movement, collection, exfiltration, impact), its MITRE ATT&CK technique and its evidence.
 - Check the consistency of times between sources; report inconsistencies (clock, time zone, timestomping).
 - List the final IOCs with `add_ioc` (hash, path, file name, IP, domain, URL, account, registry key, service, task), each with its evidence.
+- Describe the attack as **hypotheses** with `add_hypothesis`: one statement per stage that a reader must accept or reject (e.g. "Initial access to DESKTOP-X by RDP from 10.42.85.10 with C137\Administrator", "Persistence by the service coreupdater", "Data staged in loot.zip and sent over the C2 channel"), with the findings that **support** it and, honestly, those that **contradict** it or leave room for another explanation. Also record the alternatives you ruled out as hypotheses, with the finding that contradicts them. The program computes the status (supported, contested, refuted, open) and the confidence; a hypothesis backed by a critical or high finding is then **challenged** by a dedicated task that looks for what would contradict it, before the summary.
 
 ## Step 14: Summary, answers and recommendations
 Scope: case
@@ -208,7 +209,7 @@ Phase: final
 Goal: produce the summary elements of the report.
 
 - `set_summary`:
-  - executive summary: what happened, when, impact, confidence level;
+  - executive summary: what happened, when, impact, confidence level; build it on the hypotheses and their computed status (a *probable* or *contested* hypothesis is written as such, a *refuted* one is not presented as a fact);
   - detailed technical assessment;
   - limitations of the analysis: missing sources, absent artifacts, uncertainties.
 - `answer_question` for each question of the guidance file: reasoned answer with evidence, or "undetermined" explaining why.

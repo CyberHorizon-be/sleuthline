@@ -61,10 +61,10 @@ DECISION_RULES = CONFIG_DIR / "decision_rules.json"
 KEYS_FILE = CONFIG_DIR / "api_keys.txt"
 DEFAULT_LIMITS = {"max_tool_calls_per_step": 40, "max_result_chars": 15000, "max_rows": 200,
                   "keep_full_results": 12, "query_timeout_s": 120, "max_billed_tokens_per_run": 0,
-                  "max_context_tokens_per_step": 180000, **decision.DEFAULT_BOUNDS}
+                  "max_context_tokens_per_step": 180000, **decision.DEFAULT_BOUNDS, "max_challenge_tasks": 10}
 # After the tool-call limit or the context limit of a step, only these tools still run (record, then end the step)
 RECORD_TOOLS = {"add_finding", "add_evidence", "add_timeline_event", "add_ioc", "answer_question", "note", "set_summary",
-                "set_recommendations", "step_complete", "add_lead", "task_complete"}
+                "set_recommendations", "step_complete", "add_lead", "task_complete", "add_hypothesis", "link_hypothesis"}
 LIKE_ESCAPE = " ESCAPE '\\'"
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 CONFIDENCES = ["confirmed", "probable", "possible"]
@@ -619,6 +619,12 @@ class State:
                 f"  {e['ts']} {e['title']}" for e in sorted(self.d["timeline_events"], key=lambda e: e["ts"] or "")[-60:]))
         if self.d["iocs"]:
             out.append("Recorded IOCs:\n" + "\n".join(f"  {i['type']} = {i['value']}" for i in self.d["iocs"]))
+        if self.d.get("hypotheses"):
+            out.append("Hypotheses (status and confidence computed by the program):\n" + "\n".join(
+                f"  {h['id']} [{h.get('status')}/{h.get('confidence')}] {h['statement'][:250]} "
+                f"(supports: {', '.join(x['finding'] for x in h['links'] if x['relation'] == 'supports') or '-'}; "
+                f"contradicts: {', '.join(x['finding'] for x in h['links'] if x['relation'] == 'contradicts') or '-'})"
+                for h in self.d["hypotheses"]))
         leads = self.d.get("leads") or []
         done = [x for x in leads if x.get("status") == "done"]
         if done:
@@ -722,6 +728,20 @@ TOOLS = [
          "refs": REFS, "entities": {"type": "array", "items": {"type": "string"}, "description": "seeds: values or entity_id"},
          "host": {"type": "string", "description": "multi-host case: the host it concerns, if only one"}},
                     "required": ["question", "reason", "priority"]}},
+    {"name": "add_hypothesis", "description": "Records a hypothesis about the attack (e.g. 'Initial access to DESKTOP-X by RDP "
+     "from the DC with the domain Administrator account'), linked to the findings that support it (and contradict it, if "
+     "any). Its status and confidence are computed by the program; a hypothesis backed by a critical or high finding is "
+     "challenged by a dedicated task that looks for what would contradict it.",
+     "parameters": {"type": "object", "properties": {
+         "statement": {"type": "string"}, "tactic": {"type": "string", "description": "phase / ATT&CK tactic"},
+         "supports": {"type": "array", "items": {"type": "string"}, "description": "finding ids, e.g. F-003"},
+         "contradicts": {"type": "array", "items": {"type": "string"}},
+         "context": {"type": "array", "items": {"type": "string"}}}, "required": ["statement", "supports"]}},
+    {"name": "link_hypothesis", "description": "Links a finding to a recorded hypothesis: supports, contradicts or context.",
+     "parameters": {"type": "object", "properties": {
+         "hypothesis": {"type": "string", "description": "e.g. H-002"}, "finding": {"type": "string"},
+         "relation": {"type": "string", "enum": ["supports", "contradicts", "context"]}, "note": {"type": "string"}},
+                    "required": ["hypothesis", "finding", "relation"]}},
     {"name": "task_complete", "description": "Ends an investigation task with its outcome.",
      "parameters": {"type": "object", "properties": {
          "outcome": {"type": "string", "enum": list(decision.OUTCOMES),
@@ -782,7 +802,9 @@ class Agent:
         self.step_done = None
         self.run_billed = 0.0           # billed tokens (input equivalent) since launch: budget
         self.leads = decision.Leads(state)
-        self.tools = [t for t in TOOLS if not (limits.get("_classic") and t["name"] in ("add_lead", "task_complete"))]
+        self.hyps = decision.Hypotheses(state)
+        self.tools = [t for t in TOOLS if not (limits.get("_classic") and t["name"] in
+                                               ("add_lead", "task_complete", "add_hypothesis", "link_hypothesis"))]
 
     # -- trace -----------------------------------------------------------------------------
     def trace(self, kind: str, **data):
@@ -1137,6 +1159,55 @@ class Agent:
             return f"OK: already listed as {lead['id']} ({lead['status']}): not added again."
         self.log(f"      + lead {lead['id']} [{lead['priority']}] {lead['question'][:100]}")
         return f"OK: lead {lead['id']} opened (depth {lead['depth']}); it will be investigated as a task after the triage."
+
+    # -- hypotheses (2.0c) -------------------------------------------------------------------
+    def refresh_hypotheses(self):
+        fs = {f["id"]: f for f in self.state.d["findings"]}
+        ls = {x["id"]: x for x in self.leads.all}
+        for h in self.hyps.all:
+            decision.evaluate_hypothesis(h, fs, ls, self.policy, guards.independent_sources)
+
+    def hyp_text(self, h: dict) -> str:
+        return (f"{h['id']}: {h['status']}, confidence {h['confidence']}"
+                + (f" ({'; '.join(h['reasons'])})" if h.get("reasons") else ""))
+
+    def t_add_hypothesis(self, statement, supports, tactic="", contradicts=None, context=None):
+        if not str(statement or "").strip():
+            return "ERROR: statement is required."
+        fs = {f["id"]: f for f in self.state.d["findings"]}
+        links = [(x, "supports") for x in as_list(supports)] + [(x, "contradicts") for x in as_list(contradicts)] \
+            + [(x, "context") for x in as_list(context)]
+        unknown = [x for x, _ in links if str(x).strip() not in fs]
+        if unknown:
+            return f"REFUSED: unknown finding(s) {', '.join(map(str, unknown))}: record them with add_finding first."
+        if not any(r == "supports" for _, r in links):
+            return "REFUSED: at least one supporting finding is required."
+        h, new = self.hyps.add(statement, tactic, self.current_step, now_utc())
+        for x, r in links:
+            self.hyps.link(h, str(x).strip(), r)
+        if new and any(fs[str(x).strip()].get("severity") in self.policy["corroboration_severities"]
+                       for x, r in links if r == "supports") and not self.limits.get("_classic"):
+            lead, created = self.leads.add(decision.challenge_question(h), f"challenge of {h['id']}", "high", "challenge",
+                                           h["id"], self.current_depth, now=now_utc())
+            h["challenge_lead"] = lead["id"]
+        self.refresh_hypotheses()
+        self.state.save()
+        self.log(f"      + hypothesis {h['id']} {h['statement'][:90]}")
+        return (("OK: " if new else "OK: already recorded, links added. ") + self.hyp_text(h)
+                + (f". Challenge task {h['challenge_lead']} will look for what would contradict it." if h.get("challenge_lead") else ""))
+
+    def t_link_hypothesis(self, hypothesis, finding, relation, note=""):
+        h = self.hyps.get(hypothesis)
+        if not h:
+            return f"ERROR: unknown hypothesis {hypothesis}"
+        if relation not in decision.RELATIONS:
+            return f"ERROR: relation must be one of {list(decision.RELATIONS)}"
+        if str(finding).strip() not in {f["id"] for f in self.state.d["findings"]}:
+            return f"REFUSED: unknown finding {finding}"
+        self.hyps.link(h, str(finding).strip(), relation, note)
+        self.refresh_hypotheses()
+        self.state.save()
+        return "OK: " + self.hyp_text(h)
 
     def t_task_complete(self, outcome, summary, gaps=""):
         if outcome not in decision.OUTCOMES:
@@ -1615,6 +1686,12 @@ def main(argv=None):
                     run_tasks(agent, state, db, system, limits, log)
                 for k, (step, h) in enumerate(final, len(triage) + 1):
                     run_step(step, h, k)
+                    # 2.0c: the correlation step records the hypotheses; their challenges (and any lead it opened)
+                    # are investigated before the next final step (summary)
+                    if not classic and not args.steps and k < len(triage) + len(final) and agent.leads.open():
+                        run_tasks(agent, state, db, system, limits, log)
+                agent.refresh_hypotheses()
+                state.save()
         except LLMError as e:
             log(f"MODEL ERROR: {e}")
             log("The state is saved: run the same command again to resume at the unfinished steps.")
@@ -1650,6 +1727,7 @@ def run_tasks(agent, state, db, system: str, limits: dict, log) -> None:
     decision.evaluate_rules(rules, state, db, leads, 1, now_utc(), data_rules=True, log=log)
     state.save()
     max_tasks, max_depth = int(limits["max_tasks"]), int(limits["max_lead_depth"])
+    max_challenges = int(limits.get("max_challenge_tasks", 10))
     n_open = len(leads.open())
     if n_open:
         log(f"Investigation tasks: {n_open} lead(s) open (rules and agent), at most {max_tasks} task(s), depth {max_depth}")
@@ -1662,23 +1740,26 @@ def run_tasks(agent, state, db, system: str, limits: dict, log) -> None:
         if lead["depth"] > max_depth:
             lead["status"], lead["not_investigated"] = "not_investigated", f"depth limit ({max_depth})"
             continue
-        done = sum(1 for x in leads.all if x.get("status") == "done")
-        if done >= max_tasks:
-            for x in queue:
-                x["status"], x["not_investigated"] = "not_investigated", f"task limit ({max_tasks} tasks per case)"
-            log(f"  task limit reached: {len(queue)} lead(s) not investigated (listed in the report)")
-            break
+        challenge = lead["source"] == "challenge"
+        done = sum(1 for x in leads.all if x.get("status") == "done" and (x["source"] == "challenge") == challenge)
+        cap = max_challenges if challenge else max_tasks
+        if done >= cap:
+            lead["status"], lead["not_investigated"] = "not_investigated", (
+                f"challenge limit ({cap} challenge tasks per case)" if challenge else f"task limit ({cap} tasks per case)")
+            log(f"  {lead['id']} not investigated: {lead['not_investigated']}")
+            continue
         key = f"task:{lead['id']}"
         agent.current_step, agent.current_host = key, lead.get("host")
         agent.current_depth, agent.current_lead = lead["depth"] + 1, lead["id"]
-        log(f"Task {lead['id']} [{lead['priority']}, depth {lead['depth']}] ({done + 1}/{max_tasks}): {lead['question'][:120]}")
+        log(f"{'Challenge' if challenge else 'Task'} {lead['id']} [{lead['priority']}, depth {lead['depth']}] ({done + 1}/{cap}): "
+            f"{lead['question'][:120]}")
         purged = state.purge_step(key)
         if purged:
             log(f"  {purged} item(s) from a previous run of this task removed (replay)")
         lead.update(status="running", started=now_utc(), task_key=key)
         state.save()
         nf = len(state.d["findings"])
-        u, n, dur = agent.run_conversation(system, agent.task_prompt(lead, done + 1, max_tasks), f"task {lead['id']}",
+        u, n, dur = agent.run_conversation(system, agent.task_prompt(lead, done + 1, cap), f"task {lead['id']}",
                                            final_tool="task_complete", max_calls=int(limits["max_tool_calls_per_task"]))
         res = agent.step_done or {}
         lead.update(status="done", ended=now_utc(), duration_s=round(dur, 1), tool_calls=n, usage=u,
@@ -1686,8 +1767,10 @@ def run_tasks(agent, state, db, system: str, limits: dict, log) -> None:
         state.save()
         log(f"  {lead['outcome']} in {fmt_duration(dur)}: {n} tool calls, {len(state.d['findings']) - nf} finding(s)")
         decision.evaluate_rules(rules, state, db, leads, lead["depth"] + 1, now_utc(), log=log)
+        agent.refresh_hypotheses()
         state.save()
     agent.current_lead, agent.current_host, agent.current_depth = None, None, 1
+    agent.refresh_hypotheses()
     state.d["tasks_ended"] = now_utc()
     state.save()
 
