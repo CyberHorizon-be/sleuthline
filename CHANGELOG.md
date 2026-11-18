@@ -24,11 +24,8 @@
   - the tool-call limit applies inside one answer: beyond it, only recording tools run; new limit `max_context_tokens_per_step` (180,000 by default): beyond it, the step records its results and ends;
   - a 200 answer of the model API that is not JSON is retried instead of stopping the analysis.
 - README: the EZTools bootstrap runs before the lock comparison (supply chain); daylight saving time not handled (one hour off in Europe for the other season).
-- Tests: 68 tests.
 
-## 2.0.0 (in progress)
-
-Design in `docs/design/v2.0.md` (decision graph, in three parts).
+**2.0 (decision graph).** Design in `docs/design/v2.0.md` (decision graph, in three parts).
 
 - **2.0a, entity graph.** `normalize.py` (and `merge.py` for a multi-host case) builds `entities` and `entity_refs`: files (paths normalized without the drive or volume), file names of executables / scripts / archives, hashes, IPv4 addresses, URLs, domains, accounts, SIDs and hosts, linked to the records where they appear (timeline, detections, hash matches). Deterministic, no model call; same `entity_id` on every host; `common` entities flagged. New agent tools `pivot` and `neighbours` (results wrapped as untrusted evidence); playbook rule 6 uses them. Report: *Links between findings* (entities shared by several findings or several hosts).
 - **2.0b, leads and investigation tasks (the decision graph itself).** Playbook steps 1-12 become a triage (30 tool calls), steps 13-14 `Phase: final`. New agent tools `add_lead` and `task_complete`; decision rules in `config\decision_rules.json` (23 rules: on findings, on the data, on IOCs beyond the findings), each firing once per origin; scheduler (`run_tasks`): leads by priority, focused tasks (15 tool calls, seeds resolved with `pivot`, host scope, instruction to look for counter-evidence), new leads from the tasks and the rules, bounds `max_tasks` 30 and `max_lead_depth` 3, leads beyond a bound kept with the reason. Report: tasks in the technical analysis, appendix *Decision trace*, leads not investigated in the limitations. `--classic` keeps the 1.2 flow.
