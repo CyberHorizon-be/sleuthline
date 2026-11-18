@@ -1293,7 +1293,8 @@ class TestAuditFixes(unittest.TestCase):
             st, tools = self.run_case(d, [{"tool_calls": [q, q, q, q,
                 {"name": "add_finding", "args": {"title": "EVIL.EXE", "severity": "low", "confidence": "confirmed",
                                                  "description": "x", "refs": ["prefetch/p.csv#1"]}},
-                {"name": "step_complete", "args": {"summary": "done"}}]}], limits={"max_tool_calls_per_step": 2})
+                {"name": "step_complete", "args": {"summary": "done"}}]}], limits={"max_tool_calls_per_step": 2,
+                                                                                 "max_tool_calls_per_triage_step": 2})
             self.assertEqual([t["result"].startswith("<untrusted_evidence") and "not run" not in t["result"] for t in tools[:4]],
                              [True, True, False, False])
             self.assertIn("tool call limit", tools[2]["result"])
@@ -1447,6 +1448,115 @@ class TestEntityGraph(unittest.TestCase):
                 xml = z.read("word/document.xml").decode("utf-8")
             self.assertIn("Links between findings", xml)
             self.assertIn("F-001, F-002", xml)
+
+
+
+class TestDecisionGraph(unittest.TestCase):
+    """2.0b: leads, decision rules, investigation tasks within bounds, decision trace."""
+
+    def setup_case(self, d, script, limits=None, extra_args=()):
+        case = Path(d) / "case"
+        build_synthetic_case(case)
+        (Path(d) / "script.json").write_text(json.dumps(script), encoding="utf-8")
+        cfg = {"active": "mock", "limits": limits or {},
+               "profiles": {"mock": {"provider": "mock", "model": "mock", "script": str(Path(d) / "script.json")}}}
+        (Path(d) / "cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
+        pb = Path(d) / "PLAYBOOK.md"
+        pb.write_text("# P\n\n## Rules\n\n1. Facts.\n\n## Step 1: Execution\n\nLook.\n\n"
+                      "## Step 2: Summary\nPhase: final\n\nSummarize.\n", encoding="utf-8")
+        rc = analyze.main([str(case), "--config", str(Path(d) / "cfg.json"), "--playbook", str(pb), *extra_args])
+        self.assertEqual(rc, 0)
+        st = json.loads((case / "analysis" / "findings.json").read_text(encoding="utf-8"))
+        tr = [json.loads(l) for l in (case / "analysis" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
+        return case, st, tr
+
+    PERSISTENCE = {"name": "add_finding", "args": {"title": "Service EVIL installed", "severity": "high", "confidence": "probable",
+                                                   "description": "7045: new service running C:\\Users\\bob\\EVIL.EXE",
+                                                   "refs": ["evtx/e.csv#1"]}}
+
+    def test_rules(self):
+        rules = analyze.decision.load_rules(PIPE / "config" / "decision_rules.json")
+        self.assertGreaterEqual(len(rules), 20)
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            con = duckdb.connect(str(case / "db" / "case.duckdb"))
+            con.execute("INSERT INTO timeline VALUES (400, TIMESTAMP '2023-11-10 11:10:00', 'event', 'Event logs (EVTX)', 'logs', "
+                        "'EvtxECmd', 'PC1', NULL, NULL, 'System 7045 | A new service was installed | Name: upd | "
+                        "C:\\Users\\bob\\AppData\\upd.exe', NULL, 'evtx', 'evtx/e.csv', 3, NULL, 'validated', 'evtx/e.csv#3')")
+            con.close()
+            db = analyze.CaseDB(case / "db" / "case.duckdb", analyze.DEFAULT_LIMITS)
+            st = analyze.State(Path(d) / "f.json")
+            st.d["findings"].append({"id": "F-001", "title": "Service EVIL installed", "severity": "high", "description": "7045 new service",
+                                     "evidence": [{"ref": "evtx/e.csv#1"}]})
+            st.d["findings"].append({"id": "F-002", "title": "Prefetch of CMD", "severity": "low", "description": "7045",
+                                     "evidence": [{"ref": "prefetch/p.csv#2"}]})
+            leads = analyze.decision.Leads(st)
+            made = analyze.decision.evaluate_rules(rules, st, db, leads, 1, "t", data_rules=True, log=lambda *a: None)
+            src = {(x["source"], x["origin"]) for x in made}
+            self.assertIn(("rule:persistence-origin", "F-001"), src)
+            self.assertNotIn(("rule:persistence-origin", "F-002"), src)      # below the minimum severity
+            self.assertIn(("rule:suspicious-service", None), src)             # data rule: 7045 from AppData, not cited
+            self.assertIn("evtx/e.csv#3", next(x for x in made if x["source"] == "rule:suspicious-service")["refs"])
+            again = analyze.decision.evaluate_rules(rules, st, db, leads, 1, "t", data_rules=True, log=lambda *a: None)
+            self.assertEqual(again, [])                                       # a rule fires once per origin
+            lead, new = leads.add("Service EVIL installed: where does the file come from?!", "x", "high", "agent", None, 1)
+            lead2, new2 = leads.add("service evil installed - where does the file come from", "y", "low", "agent", None, 1)
+            self.assertTrue(new)
+            self.assertFalse(new2)                                            # same question, normalized
+
+    def test_tasks_bounds_and_trace(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = [
+                {"tool_calls": [self.PERSISTENCE,
+                                {"name": "add_lead", "args": {"question": "Who used the account bob on PC1?", "reason": "x",
+                                                              "priority": "low", "refs": ["prefetch/p.csv#1"]}},
+                                {"name": "step_complete", "args": {"summary": "triage done"}}]},
+                # task 1: the rule lead (high); opens a deeper lead
+                {"tool_calls": [{"name": "add_finding", "args": {"title": "EVIL.EXE executed from the user profile",
+                                                                 "severity": "medium", "confidence": "probable", "description": "x",
+                                                                 "refs": ["prefetch/p.csv#1"]}},
+                                {"name": "add_lead", "args": {"question": "Was EVIL.EXE downloaded?", "reason": "origin",
+                                                              "priority": "high"}},
+                                {"name": "task_complete", "args": {"outcome": "confirmed", "summary": "file in the profile"}}]},
+                {"tool_calls": [{"name": "task_complete", "args": {"outcome": "refuted", "summary": "no download"}}]},
+                {"tool_calls": [{"name": "step_complete", "args": {"summary": "final"}}]},
+            ]
+            case, st, tr = self.setup_case(d, script, limits={"max_tasks": 2})
+            leads = {x["id"]: x for x in st["leads"]}
+            by_q = {x["question"]: x for x in st["leads"]}
+            rule_lead = next(x for x in st["leads"] if x["source"] == "rule:persistence-origin")
+            self.assertEqual((rule_lead["status"], rule_lead["outcome"], rule_lead["depth"]), ("done", "confirmed", 1))
+            deep = by_q["Was EVIL.EXE downloaded?"]
+            self.assertEqual((deep["status"], deep["outcome"], deep["depth"], deep["origin"]), ("done", "refuted", 2, rule_lead["id"]))
+            low = by_q["Who used the account bob on PC1?"]
+            self.assertEqual((low["status"], low["not_investigated"]), ("not_investigated", "task limit (2 tasks per case)"))
+            f = next(x for x in st["findings"] if x["title"].startswith("EVIL.EXE executed"))
+            self.assertEqual(f["step"], f"task:{rule_lead['id']}")
+            self.assertEqual(st["steps"]["2"]["summary"], "final")            # final step after the tasks
+            self.assertEqual(st["usage"]["calls"], 4)
+            import zipfile
+            with zipfile.ZipFile(next((case / "analysis").glob("report_*.docx"))) as z:
+                xml = z.read("word/document.xml").decode("utf-8")
+            for text in ("Decision trace", "Investigation task " + rule_lead["id"], "task limit (2 tasks per case)",
+                         "rule persistence-origin, from F-001, depth 1", "agent, from step 1, depth 1"):
+                self.assertIn(text, xml)
+
+    def test_depth_limit_and_classic(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = [
+                {"tool_calls": [self.PERSISTENCE, {"name": "step_complete", "args": {"summary": "t"}}]},
+                {"tool_calls": [{"name": "add_lead", "args": {"question": "Deeper?", "reason": "x", "priority": "high"}},
+                                {"name": "task_complete", "args": {"outcome": "inconclusive", "summary": "s"}}]},
+            ]
+            _, st, _ = self.setup_case(d, script, limits={"max_lead_depth": 1})
+            deeper = next(x for x in st["leads"] if x["question"] == "Deeper?")
+            self.assertEqual((deeper["status"], deeper["not_investigated"]), ("not_investigated", "depth limit (1)"))
+        with tempfile.TemporaryDirectory() as d:
+            _, st, tr = self.setup_case(d, [{"tool_calls": [self.PERSISTENCE, {"name": "step_complete", "args": {"summary": "t"}}]}],
+                                        extra_args=("--classic",))
+            self.assertEqual(st.get("leads", []), [])                          # no rule, no task
+            self.assertEqual(st["usage"]["calls"], 2)                          # step 1 + step 2
 
 
 def snapshot(db: Path) -> dict:

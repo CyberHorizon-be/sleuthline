@@ -51,18 +51,20 @@ CONFIG_DIR = PIPE / "config"                       # validated files (source: <r
 LOCAL_DIR = PIPE / "local"                         # files specific to this VM (never overwritten by deployment)
 from llm import LLMError, make_provider  # noqa: E402
 import guards  # noqa: E402
+import decision  # noqa: E402
 
 VERSION = "1.2"
 PLAYBOOK = CONFIG_DIR / "PLAYBOOK.md"
 GUIDANCE_TEMPLATE = CONFIG_DIR / "guidance_template.txt"
 CONFIG = CONFIG_DIR / "llm_config.json"
+DECISION_RULES = CONFIG_DIR / "decision_rules.json"
 KEYS_FILE = CONFIG_DIR / "api_keys.txt"
 DEFAULT_LIMITS = {"max_tool_calls_per_step": 40, "max_result_chars": 15000, "max_rows": 200,
                   "keep_full_results": 12, "query_timeout_s": 120, "max_billed_tokens_per_run": 0,
-                  "max_context_tokens_per_step": 180000}
+                  "max_context_tokens_per_step": 180000, **decision.DEFAULT_BOUNDS}
 # After the tool-call limit or the context limit of a step, only these tools still run (record, then end the step)
 RECORD_TOOLS = {"add_finding", "add_evidence", "add_timeline_event", "add_ioc", "answer_question", "note", "set_summary",
-                "set_recommendations", "step_complete"}
+                "set_recommendations", "step_complete", "add_lead", "task_complete"}
 LIKE_ESCAPE = " ESCAPE '\\'"
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 CONFIDENCES = ["confirmed", "probable", "possible"]
@@ -148,9 +150,9 @@ def parse_playbook(path: Path):
         title = title.strip()
         m = re.match(r"(?i)step\s+(\d+)\s*[:\-—]\s*(.+)", title)
         if m:
-            requires, scope, body = parse_step_header(body)
-            steps.append({"num": int(m.group(1)), "title": m.group(2).strip(), "body": body.strip(), "requires": requires,
-                          "scope": scope})
+            h = step_header(body)
+            steps.append({"num": int(m.group(1)), "title": m.group(2).strip(), "body": h["body"].strip(),
+                          "requires": h["requires"], "scope": h["scope"], "phase": h["phase"]})
         elif title.lower().startswith("rules"):
             rules = body.strip()
     if not steps:
@@ -158,18 +160,19 @@ def parse_playbook(path: Path):
     return rules, steps
 
 
-def parse_step_header(body: str):
+def step_header(body: str) -> dict:
     """Optional first lines of a step, in any order:
+      "Phase: triage" (default) or "Phase: final" (after the investigation tasks: correlation, summary).
       "Requires: memory" (or network, disk; several separated by |): the step needs at least one of these
       sources. Missing line or "any": the step always runs.
       "Scope: host" (run once per host of a multi-host case) or "Scope: case" (once for the case, default).
-    Returns (requires, scope, body without these lines)."""
+    Returns {requires, scope, phase, body without these lines}."""
     lines = body.strip("\n").split("\n")
     while lines and not lines[0].strip():
         lines.pop(0)
-    requires, scope = None, "case"
+    requires, scope, phase = None, "case", "triage"
     while lines:
-        m = re.fullmatch(r"(?i)\s*(requires|scope)\s*:\s*(.+?)\s*", lines[0])
+        m = re.fullmatch(r"(?i)\s*(requires|scope|phase)\s*:\s*(.+?)\s*", lines[0])
         if not m:
             break
         if m.group(1).lower() == "requires":
@@ -179,12 +182,22 @@ def parse_step_header(body: str):
                 raise SystemExit(f"Playbook: unknown source in \"{lines[0].strip()}\" ({', '.join(bad)}): "
                                  f"use any, {', '.join(SOURCE_KINDS)}")
             requires = None if "any" in vals or not vals else set(vals)
-        else:
+        elif m.group(1).lower() == "scope":
             scope = m.group(2).strip().lower()
             if scope not in ("host", "case"):
                 raise SystemExit(f"Playbook: unknown scope in \"{lines[0].strip()}\": use host or case")
+        else:
+            phase = m.group(2).strip().lower()
+            if phase not in ("triage", "final"):
+                raise SystemExit(f"Playbook: unknown phase in \"{lines[0].strip()}\": use triage or final")
         lines.pop(0)
-    return requires, scope, "\n".join(lines)
+    return {"requires": requires, "scope": scope, "phase": phase, "body": "\n".join(lines)}
+
+
+def parse_step_header(body: str):
+    """(requires, scope, body without the header lines): see step_header."""
+    h = step_header(body)
+    return h["requires"], h["scope"], h["body"]
 
 
 def parse_requires(body: str):
@@ -606,6 +619,15 @@ class State:
                 f"  {e['ts']} {e['title']}" for e in sorted(self.d["timeline_events"], key=lambda e: e["ts"] or "")[-60:]))
         if self.d["iocs"]:
             out.append("Recorded IOCs:\n" + "\n".join(f"  {i['type']} = {i['value']}" for i in self.d["iocs"]))
+        leads = self.d.get("leads") or []
+        done = [x for x in leads if x.get("status") == "done"]
+        if done:
+            out.append("Investigation tasks done:\n" + "\n".join(
+                f"  {x['id']} [{x.get('outcome')}] {x['question'][:200]} -> {str(x.get('summary') or '')[:400]}" for x in done))
+        pend = [x for x in leads if x.get("status") == "open"]
+        if pend:
+            out.append("Leads already open (do not open them again):\n" + "\n".join(
+                f"  {x['id']} [{x['priority']}] {x['question'][:200]}" for x in pend))
         return "\n\n".join(out) or "(no finding so far)"
 
 
@@ -691,6 +713,22 @@ TOOLS = [
                                                     ("immediate", "remediation", "hardening", "detection", "further_investigation")}}},
     {"name": "note", "description": "Working note (leads ruled out, false positives): appears in the report appendix.",
      "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
+    {"name": "add_lead", "description": "Opens a lead: a precise question that deserves a focused investigation after the triage "
+     "(e.g. 'Which host was the source of the RDP logon from 10.42.85.10?'). The program runs it as a task, highest priority "
+     "first. Do not open a lead for what you can settle now with a few queries, nor for a question already listed.",
+     "parameters": {"type": "object", "properties": {
+         "question": {"type": "string"}, "reason": {"type": "string", "description": "what makes it worth investigating"},
+         "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+         "refs": REFS, "entities": {"type": "array", "items": {"type": "string"}, "description": "seeds: values or entity_id"},
+         "host": {"type": "string", "description": "multi-host case: the host it concerns, if only one"}},
+                    "required": ["question", "reason", "priority"]}},
+    {"name": "task_complete", "description": "Ends an investigation task with its outcome.",
+     "parameters": {"type": "object", "properties": {
+         "outcome": {"type": "string", "enum": list(decision.OUTCOMES),
+                     "description": "confirmed: the question is answered positively; refuted: checked and not the case; "
+                                    "inconclusive: the data does not allow to answer"},
+         "summary": {"type": "string", "description": "answer to the question: what was checked, found, with references"},
+         "gaps": {"type": "string"}}, "required": ["outcome", "summary"]}},
     {"name": "step_complete", "description": "Ends the current step with a technical summary.",
      "parameters": {"type": "object", "properties": {"summary": {"type": "string"},
                                                     "gaps": {"type": "string", "description": "what could not be verified and why"}},
@@ -738,8 +776,13 @@ class Agent:
         self.policy = limits.get("evidence_policy") or guards.load_policy(None)
         self.untrusted = guards.Untrusted()
         self.current_step = None
+        self.current_host = None
+        self.current_depth = 1          # depth of the leads opened now: 1 in the triage, task depth + 1 in a task
+        self.current_lead = None
         self.step_done = None
         self.run_billed = 0.0           # billed tokens (input equivalent) since launch: budget
+        self.leads = decision.Leads(state)
+        self.tools = [t for t in TOOLS if not (limits.get("_classic") and t["name"] in ("add_lead", "task_complete"))]
 
     # -- trace -----------------------------------------------------------------------------
     def trace(self, kind: str, **data):
@@ -1076,6 +1119,31 @@ class Agent:
         self.state.save()
         return "OK"
 
+    def t_add_lead(self, question, reason, priority="medium", refs=None, entities=None, host=None):
+        if not str(question or "").strip():
+            return "ERROR: question is required."
+        refs = [r for r in as_list(refs) if str(r).strip()]
+        if refs:
+            ev, err = self.resolve_all(refs)
+            if err:
+                return "REFUSED: " + err
+            refs = [e["ref"] for e in ev]
+        lead, new = self.leads.add(question, reason, str(priority or "medium").lower(), "agent",
+                                   self.current_lead or (str(self.current_step) if self.current_step is not None else None),
+                                   self.current_depth, refs=refs, entities=as_list(entities),
+                                   host=host or self.current_host, now=now_utc())
+        self.state.save()
+        if not new:
+            return f"OK: already listed as {lead['id']} ({lead['status']}): not added again."
+        self.log(f"      + lead {lead['id']} [{lead['priority']}] {lead['question'][:100]}")
+        return f"OK: lead {lead['id']} opened (depth {lead['depth']}); it will be investigated as a task after the triage."
+
+    def t_task_complete(self, outcome, summary, gaps=""):
+        if outcome not in decision.OUTCOMES:
+            return f"ERROR: outcome must be one of {list(decision.OUTCOMES)}"
+        self.step_done = {"summary": summary, "gaps": gaps, "outcome": outcome}
+        return "OK: task completed."
+
     def t_step_complete(self, summary, gaps=""):
         self.step_done = {"summary": summary, "gaps": gaps}
         return "OK: step completed."
@@ -1148,6 +1216,46 @@ DATABASE STRUCTURE:
         sweep = self.ioc_sweep_text()
         if sweep:
             sweep = self.untrusted.wrap(sweep, "ioc_sweep")[0]
+        scope = self.scope_text(host)
+        return f"""STEP {step['num']} / {total}: {step['title']}{' — host ' + host if host else ''}
+{scope}
+{step['body']}
+
+ANALYSIS STATE (previous steps):
+{self.state.compact()}
+
+{sweep}
+
+Instructions: explore the database with the tools, pivot, corroborate. Record each finding (add_finding), the key events (add_timeline_event) and the IOCs (add_ioc) as soon as they are established, with their references. Do not duplicate a finding already recorded: complement it with a new one if the contribution is significant.{self.triage_text(step)} Finish with step_complete."""
+
+    def triage_text(self, step: dict) -> str:
+        if step.get("phase") != "triage" or self.limits.get("_classic"):
+            return ""
+        return (" This is a TRIAGE step: establish what is there and record it; when a thread needs a deeper look "
+                "(origin of a file, source host of a logon, what an account did next, how data left...), open a lead with "
+                "add_lead (precise question, reason, priority, seeds) instead of following it to the end now: leads are "
+                "investigated as focused tasks after the triage, highest priority first.")
+
+    def task_prompt(self, lead: dict, n: int, total: int) -> str:
+        seeds = ""
+        for v in lead.get("entities", [])[:3]:
+            seeds += "\n" + self.t_pivot(v)[:3000]
+        seeds = self.untrusted.wrap(seeds, "pivot")[0] if seeds else "(none)"
+        origin = lead.get("origin") or "-"
+        return f"""INVESTIGATION TASK {lead['id']} ({n} / {total} so far; depth {lead['depth']}, priority {lead['priority']})
+{self.scope_text(lead.get('host'))}
+QUESTION: {lead['question']}
+WHY: {lead.get('reason') or '-'} (opened by {lead['source']}, from {origin})
+REFERENCES GIVEN WITH THE LEAD: {', '.join(lead.get('refs') or []) or '(none)'}
+SEEDS (entity graph):
+{seeds}
+
+ANALYSIS STATE:
+{self.state.compact()}
+
+Instructions: answer this question only, with the tools (pivot and neighbours first, then the raw records). Record what you establish (add_finding, add_evidence to an existing finding, add_timeline_event, add_ioc). Look for what would contradict the hypothesis behind the question, not only for what confirms it. Open a new lead (add_lead) only for a NEW question that this task cannot settle. Finish with task_complete: outcome confirmed / refuted / inconclusive, and a summary that answers the question with its references."""
+
+    def scope_text(self, host: str | None) -> str:
         scope = ""
         if host:
             scope = (f"\nSCOPE OF THIS RUN: host {host} only. Filter the common tables on host_id = '{host}', the raw.* views on "
@@ -1158,16 +1266,7 @@ DATABASE STRUCTURE:
         elif self.db.multi:
             scope = ("\nSCOPE OF THIS RUN: the whole case (every host and the captures). Start from what each host showed "
                      "(analysis state below) and establish the links between the hosts, with references from each side.\n")
-        return f"""STEP {step['num']} / {total}: {step['title']}{' — host ' + host if host else ''}
-{scope}
-{step['body']}
-
-ANALYSIS STATE (previous steps):
-{self.state.compact()}
-
-{sweep}
-
-Instructions: explore the database with the tools, pivot, corroborate. Record each finding (add_finding), the key events (add_timeline_event) and the IOCs (add_ioc) as soon as they are established, with their references. Do not duplicate a finding already recorded: complement it with a new one if the contribution is significant. Finish with step_complete."""
+        return scope
 
     # -- step loop -------------------------------------------------------------------------
     def compact_messages(self, messages: list[dict]) -> list[dict]:
@@ -1191,7 +1290,8 @@ Instructions: explore the database with the tools, pivot, corroborate. Record ea
                 out.append(m)
         return out
 
-    def run_conversation(self, system: str, first_user: str, label: str, final_tool: str = "step_complete"):
+    def run_conversation(self, system: str, first_user: str, label: str, final_tool: str = "step_complete",
+                         max_calls: int | None = None):
         messages = [{"role": "user", "content": first_user}]
         calls, nudges, forced = 0, 0, False
         usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
@@ -1199,7 +1299,7 @@ Instructions: explore the database with the tools, pivot, corroborate. Record ea
         t0 = time.time()
         while True:
             try:
-                rep = self.provider.chat(system, self.compact_messages(messages), TOOLS)
+                rep = self.provider.chat(system, self.compact_messages(messages), self.tools)
             except LLMError as e:
                 self.trace("error", error=str(e))
                 raise
@@ -1225,12 +1325,12 @@ Instructions: explore the database with the tools, pivot, corroborate. Record ea
                 nudges += 1
                 if nudges > 3:
                     self.log(f"    the model no longer answers with tool calls: end of {label}")
-                    if rep.text and final_tool == "step_complete":
-                        self.step_done = {"summary": rep.text, "gaps": "step ended without step_complete"}
+                    if rep.text:
+                        self.step_done = {"summary": rep.text, "gaps": f"ended without {final_tool}"}
                     break
                 messages.append({"role": "user", "content": f"Continue with the tools. Finish with {final_tool}."})
                 continue
-            limit = self.limits["max_tool_calls_per_step"]
+            limit = int(max_calls or self.limits["max_tool_calls_per_step"])
             for tc in rep.tool_calls:
                 calls += 1
                 if (forced or calls > limit) and tc["name"] not in RECORD_TOOLS | {final_tool}:
@@ -1387,6 +1487,8 @@ def main(argv=None):
     ap.add_argument("--reset", action="store_true", help="start from scratch (findings.json archived)")
     ap.add_argument("--ask", help="one-off question (answer added to the report)")
     ap.add_argument("--report-only", action="store_true", help="regenerate the report without calling the model")
+    ap.add_argument("--classic", action="store_true",
+                    help="1.2 flow: every playbook step with the full call budget, no leads nor investigation tasks")
     ap.add_argument("--no-report", action="store_true")
     args = ap.parse_args(argv)
 
@@ -1407,6 +1509,8 @@ def main(argv=None):
         state_path.rename(out / f"findings_{dt.datetime.now():%Y%m%d_%H%M%S}.json")
     state = State(state_path)
     profile_name, pcfg, limits = load_config(args.config, args.profile)
+    classic = bool(args.classic)
+    limits["_classic"] = classic
     db = CaseDB(db_path, limits)
     rules, steps = parse_playbook(args.playbook)
 
@@ -1474,13 +1578,17 @@ def main(argv=None):
                     state.save()
                     log(f"Step {step['num']}/{len(steps)}: {step['title']}{' @ ' + h['id'] if h else ''}  [not applicable: {reason}]")
                 todo = runnable
+                triage = [x for x in todo if x[0].get("phase") != "final"]
+                final = [x for x in todo if x[0].get("phase") == "final"]
+                total_runs = len(todo)
                 durations = []
-                for k, (step, h) in enumerate(todo, 1):
+
+                def run_step(step, h, k):
                     host = h["id"] if h else None
                     key = step_key(step["num"], host)
-                    agent.current_step = key
-                    eta = (f"; ~{fmt_duration(sum(durations) / len(durations) * (len(todo) - k + 1))} left" if durations else "")
-                    log(f"Step {step['num']}/{len(steps)}: {step['title']}{' @ ' + host if host else ''}  [{k}/{len(todo)}{eta}]")
+                    agent.current_step, agent.current_host, agent.current_depth, agent.current_lead = key, host, 1, None
+                    eta = (f"; ~{fmt_duration(sum(durations) / len(durations) * (total_runs - k + 1))} left" if durations else "")
+                    log(f"Step {step['num']}/{len(steps)}: {step['title']}{' @ ' + host if host else ''}  [{k}/{total_runs}{eta}]")
                     purged = state.purge_step(key)
                     if purged:
                         log(f"  {purged} item(s) from a previous run of this step removed (replay)")
@@ -1490,14 +1598,23 @@ def main(argv=None):
                         st["host"] = host
                     state.save()
                     nf = len(state.d["findings"])
+                    budget = (limits.get("max_tool_calls_per_triage_step") if step.get("phase") != "final" and not classic
+                              else limits["max_tool_calls_per_step"])
                     u, n, d = agent.run_conversation(system, agent.step_prompt(step, len(steps), host),
-                                                     f"step {step['num']}" + (f" ({host})" if host else ""))
+                                                     f"step {step['num']}" + (f" ({host})" if host else ""), max_calls=budget)
                     durations.append(d)
                     st.update(status=DONE, ended=now_utc(), duration_s=round(d, 1), tool_calls=n, usage=u,
                               summary=(agent.step_done or {}).get("summary", ""), gaps=(agent.step_done or {}).get("gaps", ""))
                     state.save()
                     log(f"  done in {fmt_duration(d)}: {n} tool calls, {len(state.d['findings']) - nf} finding(s), "
                         f"tokens {num(u['input_tokens'])} in / {num(u['output_tokens'])} out")
+
+                for k, (step, h) in enumerate(triage, 1):
+                    run_step(step, h, k)
+                if not classic and not args.steps:
+                    run_tasks(agent, state, db, system, limits, log)
+                for k, (step, h) in enumerate(final, len(triage) + 1):
+                    run_step(step, h, k)
         except LLMError as e:
             log(f"MODEL ERROR: {e}")
             log("The state is saved: run the same command again to resume at the unfinished steps.")
@@ -1522,6 +1639,57 @@ def main(argv=None):
     path = build_report(case, out, state.d, db, guidance, steps, pcfg, log)
     log(f"Report: {path}")
     return 0
+
+
+def run_tasks(agent, state, db, system: str, limits: dict, log) -> None:
+    """2.0b: decision rules, then the queue of leads run as investigation tasks (highest priority first), within
+    the bounds; a task can open new leads. Leads beyond a bound are kept with the reason, never dropped."""
+    rules = decision.load_rules(DECISION_RULES)
+    leads = agent.leads
+    findings = {f["id"]: f for f in state.d["findings"]}
+    decision.evaluate_rules(rules, state, db, leads, 1, now_utc(), data_rules=True, log=log)
+    state.save()
+    max_tasks, max_depth = int(limits["max_tasks"]), int(limits["max_lead_depth"])
+    n_open = len(leads.open())
+    if n_open:
+        log(f"Investigation tasks: {n_open} lead(s) open (rules and agent), at most {max_tasks} task(s), depth {max_depth}")
+    while True:
+        findings = {f["id"]: f for f in state.d["findings"]}
+        queue = sorted(leads.open(), key=lambda x: leads.order_key(x, findings))
+        if not queue:
+            break
+        lead = queue[0]
+        if lead["depth"] > max_depth:
+            lead["status"], lead["not_investigated"] = "not_investigated", f"depth limit ({max_depth})"
+            continue
+        done = sum(1 for x in leads.all if x.get("status") == "done")
+        if done >= max_tasks:
+            for x in queue:
+                x["status"], x["not_investigated"] = "not_investigated", f"task limit ({max_tasks} tasks per case)"
+            log(f"  task limit reached: {len(queue)} lead(s) not investigated (listed in the report)")
+            break
+        key = f"task:{lead['id']}"
+        agent.current_step, agent.current_host = key, lead.get("host")
+        agent.current_depth, agent.current_lead = lead["depth"] + 1, lead["id"]
+        log(f"Task {lead['id']} [{lead['priority']}, depth {lead['depth']}] ({done + 1}/{max_tasks}): {lead['question'][:120]}")
+        purged = state.purge_step(key)
+        if purged:
+            log(f"  {purged} item(s) from a previous run of this task removed (replay)")
+        lead.update(status="running", started=now_utc(), task_key=key)
+        state.save()
+        nf = len(state.d["findings"])
+        u, n, dur = agent.run_conversation(system, agent.task_prompt(lead, done + 1, max_tasks), f"task {lead['id']}",
+                                           final_tool="task_complete", max_calls=int(limits["max_tool_calls_per_task"]))
+        res = agent.step_done or {}
+        lead.update(status="done", ended=now_utc(), duration_s=round(dur, 1), tool_calls=n, usage=u,
+                    outcome=res.get("outcome") or "inconclusive", summary=res.get("summary", ""), gaps=res.get("gaps", ""))
+        state.save()
+        log(f"  {lead['outcome']} in {fmt_duration(dur)}: {n} tool calls, {len(state.d['findings']) - nf} finding(s)")
+        decision.evaluate_rules(rules, state, db, leads, lead["depth"] + 1, now_utc(), log=log)
+        state.save()
+    agent.current_lead, agent.current_host, agent.current_depth = None, None, 1
+    state.d["tasks_ended"] = now_utc()
+    state.save()
 
 
 def select_steps(spec: str | None, steps: list[dict]) -> set[int]:

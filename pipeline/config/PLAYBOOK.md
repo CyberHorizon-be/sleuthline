@@ -2,7 +2,7 @@
 
 This file drives `analyze.py`. Each `## Step N: title` section is run in order, in a separate conversation: the agent receives the text of the step, the findings of the previous steps, the guidance file of the case (questions, IOCs, context) and the tools to query the DuckDB database.
 
-The playbook can be edited freely: add, remove or reorder steps, refine queries. The `## Rules` section applies to every step. A step dedicated to one kind of evidence declares it on the line after its title (`Requires: memory`, `Requires: network`, `Requires: disk`, several separated by `|`): when the case contains none of them, the step is recorded as not applicable without calling the model. Do not add `Requires:` to a general step: every source (disk, memory, network) feeds almost every step. In a case with several hosts (`<case>\hosts\<host>\`), `Scope: host` runs the step once per host, with the queries limited to that host; `Scope: case` (default) runs it once for the whole case, to link the hosts. A single-host case runs every step once. Source of truth: `<repository>\pipeline\config\PLAYBOOK.md`, to be redeployed with `install\02_Install-Tools.ps1 -Only Pipeline`.
+The playbook can be edited freely: add, remove or reorder steps, refine queries. The `## Rules` section applies to every step. A step dedicated to one kind of evidence declares it on the line after its title (`Requires: memory`, `Requires: network`, `Requires: disk`, several separated by `|`): when the case contains none of them, the step is recorded as not applicable without calling the model. Do not add `Requires:` to a general step: every source (disk, memory, network) feeds almost every step. In a case with several hosts (`<case>\hosts\<host>\`), `Scope: host` runs the step once per host, with the queries limited to that host; `Scope: case` (default) runs it once for the whole case, to link the hosts. A single-host case runs every step once. Since 2.0 the analysis is driven by leads: the steps without `Phase:` are a **triage** (shorter budget); what deserves a deeper look is opened as a lead (`add_lead`), and the decision rules (`config\decision_rules.json`) open leads from the findings, the IOCs and the data. After the triage, each lead is investigated as a focused task, highest priority first; then the `Phase: final` steps (correlation, summary) run. `analyze --classic` keeps the 1.2 flow (every step with the full budget, no tasks). Source of truth: `<repository>\pipeline\config\PLAYBOOK.md`, to be redeployed with `install\02_Install-Tools.ps1 -Only Pipeline`.
 
 Inspired by the SANS FOR500/FOR508 methodologies (triage, execution, persistence, accounts, lateral movement, user activity, anti-forensics, exfiltration, timeline).
 
@@ -28,7 +28,8 @@ Inspired by the SANS FOR500/FOR508 methodologies (triage, execution, persistence
 8. **Be exhaustive and technical.** Full paths, hashes, EventIDs, SIDs, RecordIDs, registry values, command lines: the final report must allow another analyst to re-check everything.
 9. **SQL queries.** One query at a time, with `LIMIT`. Use `ILIKE` for text searches. Raw table columns are text: convert with `ts_parse(col)` or `TRY_CAST`. The `ts_parse`, `orig_path`, `user_from_path` macros are available.
 10. **End each step** with `step_complete`, with a technical summary of what was checked, found, and what could not be.
-11. **Several hosts** (multi-host case only). Every common table has a `host_id` column, the `raw.*` views a `_host` column, and references start with `<host_id>:`. In a host step, stay on that host. In a case step, link the hosts with evidence from each side (e.g. outbound RDP on one host, logon type 10 from its address on the other, the flow in the capture). Times are UTC on every host, but the clocks may differ: measure the offset on a pivot seen on both sides before concluding on an order of events. Evidence from two hosts counts as two sources.
+11. **Leads.** In a triage step, do not follow every thread to the end: record what is established, and open a lead (`add_lead`: a precise question, why, priority, seed references or entities) for what needs a deeper look. One lead per question; check the leads already open. In a task, answer its question only, look for what would contradict it, and end with `task_complete` (confirmed / refuted / inconclusive).
+12. **Several hosts** (multi-host case only). Every common table has a `host_id` column, the `raw.*` views a `_host` column, and references start with `<host_id>:`. In a host step, stay on that host. In a case step, link the hosts with evidence from each side (e.g. outbound RDP on one host, logon type 10 from its address on the other, the flow in the capture). Times are UTC on every host, but the clocks may differ: measure the offset on a pivot seen on both sides before concluding on an order of events. Evidence from two hosts counts as two sources.
 
 ## Step 1: System context and scope
 Scope: host
@@ -191,6 +192,7 @@ Goal: assess whether data was gathered, compressed or sent outside.
 
 ## Step 13: Incident timeline and correlation
 Scope: case
+Phase: final
 
 Goal: assemble the findings into a coherent incident timeline.
 
@@ -201,6 +203,7 @@ Goal: assemble the findings into a coherent incident timeline.
 
 ## Step 14: Summary, answers and recommendations
 Scope: case
+Phase: final
 
 Goal: produce the summary elements of the report.
 
