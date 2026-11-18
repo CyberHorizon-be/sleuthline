@@ -83,7 +83,7 @@ notepad C:\Sleuthline-setup\pipeline\config\api_keys.txt  # line: ANTHROPIC_API_
 .\install\02_Install-Tools.ps1 -Only Pipeline             # copies the key to C:\Sleuthline\pipeline
 
 # --- Checks ---------------------------------------------------------------------------------
-C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 84 tests, OK
+C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py   # 85 tests, OK
 C:\Sleuthline\pipeline\sleuthline.ps1 check               # OK: tool call and tool result accepted
 
 # --- A case ---------------------------------------------------------------------------------
@@ -275,7 +275,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
    ```
    On failure, `check` prints the error returned by the API.
 
-**Optional: run the tests** (84 tests, about 10 seconds, no network, no cost):
+**Optional: run the tests** (85 tests, about 10 seconds, no network, no cost):
 ```powershell
 C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline-setup\tests\run_tests.py
 ```
@@ -560,6 +560,8 @@ C:\Sleuthline\venvs\orchestrator\Scripts\python.exe C:\Sleuthline\pipeline\4_ana
 ```
 
 Findings are matched on their evidence (shared references, host prefix ignored), then on their title; the comparison lists the findings lost, the new ones (with the task that found them), the severity / confidence changes, the hypotheses, the leads and the model usage of each run.
+
+**Unbounded test run.** `sleuthline.ps1 analyze <case> --unbounded` runs the analysis without a token budget and without the quota per rule, with the other bounds raised well above what a case needs (150 tool calls per step, 60 per task, 500 tasks, depth 8, 200 challenges; values in `UNBOUNDED_LIMITS` of `analyze.py`): the analysis ends when no lead is left open. It shows how far the decision graph goes on a case and whether the normal bounds cut leads that matter (compare it with a normal run with `compare_runs.py`; the leads *not investigated* of the normal run say which bound stopped them). The finite ceilings are kept only as a guard against a loop. `max_context_tokens_per_step` is kept (it protects the context window of the model). The cost is not capped: follow the tokens in the log, Ctrl+C stops the run and keeps the state (run again without `--reset` to continue). The report notes the run as *unbounded test run*. For a test, not for production.
 
 **Agent tools.** SQL query, search, time window, evidence detail, coverage of the evidence, `pivot` (every record where a file, hash, IP, URL, domain, account or host appears, with the entities of the same records) and `neighbours` (what else appeared on that host around it); it records findings, timeline events, IOCs and answers, and can add corroborating evidence to a finding. It has no tool that acts on the machine, the network or the files.
 

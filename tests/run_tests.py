@@ -1726,6 +1726,26 @@ class TestDecisionAudit(unittest.TestCase):
                 analyze.load_config(c, None)
             self.assertEqual(analyze.load_config(PIPE / "config" / "llm_config.json", None)[2]["max_leads_per_rule"], 5)
 
+    def test_unbounded_limits(self):
+        u = analyze.UNBOUNDED_LIMITS
+        self.assertEqual((u["max_billed_tokens_per_run"], u["max_leads_per_rule"]), (0, 0))
+        for k in ("max_tasks", "max_lead_depth", "max_tool_calls_per_task", "max_tool_calls_per_triage_step", "max_challenge_tasks"):
+            self.assertGreater(u[k], analyze.DEFAULT_LIMITS[k])
+            self.assertGreater(u[k], 0)                                         # finite ceilings: guard against a loop
+        self.assertNotIn("max_context_tokens_per_step", u)                      # context window still protected
+        rules = [r for r in analyze.decision.load_rules(PIPE / "config" / "decision_rules.json") if r["id"] == "persistence-origin"]
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "case"
+            build_synthetic_case(case)
+            db = analyze.CaseDB(case / "db" / "case.duckdb", analyze.DEFAULT_LIMITS)
+            st = analyze.State(Path(d) / "f.json")
+            st.d["findings"] += [{"id": f"F-00{i}", "title": f"Service {i}", "severity": "high",
+                                  "description": "7045 new service", "evidence": []} for i in range(1, 9)]
+            analyze.decision.evaluate_rules(rules, st, db, analyze.decision.Leads(st), 1, "t", log=lambda *a: None,
+                                            max_leads_per_rule=0)
+            self.assertEqual(len(st.d["leads"]), 8)
+            self.assertEqual({x["status"] for x in st.d["leads"]}, {"open"})      # no quota
+
     def test_rule_quota(self):
         rules = [r for r in analyze.decision.load_rules(PIPE / "config" / "decision_rules.json") if r["id"] == "persistence-origin"]
         with tempfile.TemporaryDirectory() as d:

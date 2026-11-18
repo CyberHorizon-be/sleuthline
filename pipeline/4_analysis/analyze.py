@@ -63,6 +63,12 @@ DEFAULT_LIMITS = {"max_tool_calls_per_step": 40, "max_result_chars": 15000, "max
                   "keep_full_results": 12, "query_timeout_s": 120, "max_billed_tokens_per_run": 0,
                   "max_context_tokens_per_step": 180000, **decision.DEFAULT_BOUNDS, "max_challenge_tasks": 10,
                   "max_leads_per_rule": 5}
+# analyze --unbounded: test run "as far as it goes". No token budget, no rule quota, bounds raised far above what a case
+# needs; the analysis ends when no lead is left open. Finite ceilings remain only as a guard against a loop (a lead
+# that keeps opening leads). max_context_tokens_per_step is kept: it protects the context window of the model.
+UNBOUNDED_LIMITS = {"max_billed_tokens_per_run": 0, "max_tool_calls_per_step": 150, "max_tool_calls_per_triage_step": 150,
+                    "max_tool_calls_per_task": 60, "max_tasks": 500, "max_lead_depth": 8, "max_challenge_tasks": 200,
+                    "max_leads_per_rule": 0}
 # After the tool-call limit or the context limit of a step, only these tools still run (record, then end the step)
 RECORD_TOOLS = {"add_finding", "add_evidence", "add_timeline_event", "add_ioc", "answer_question", "note", "set_summary",
                 "set_recommendations", "step_complete", "add_lead", "task_complete", "add_hypothesis", "link_hypothesis"}
@@ -1655,6 +1661,8 @@ def main(argv=None):
     ap.add_argument("--reset", action="store_true", help="start from scratch (findings.json archived)")
     ap.add_argument("--ask", help="one-off question (answer added to the report)")
     ap.add_argument("--report-only", action="store_true", help="regenerate the report without calling the model")
+    ap.add_argument("--unbounded", action="store_true",
+                    help="test run without token budget nor rule quota, bounds raised (see UNBOUNDED_LIMITS); cost not capped")
     ap.add_argument("--classic", action="store_true",
                     help="1.2 flow: every playbook step with the full call budget, no leads nor investigation tasks")
     ap.add_argument("--no-report", action="store_true")
@@ -1679,6 +1687,9 @@ def main(argv=None):
     profile_name, pcfg, limits = load_config(args.config, args.profile)
     classic = bool(args.classic)
     limits["_classic"] = classic
+    if args.unbounded:
+        limits.update(UNBOUNDED_LIMITS)
+        limits["_unbounded"] = True
     db = CaseDB(db_path, limits)
     rules, steps = parse_playbook(args.playbook)
 
@@ -1692,9 +1703,14 @@ def main(argv=None):
             return 2
         log(f"Case: {case}")
         log(f"Model: {provider.describe()} (profile {profile_name}) ; report language: {language_name(pcfg['_report_language'])}")
+        if args.unbounded:
+            log("UNBOUNDED run: no token budget, no rule quota, at most "
+                f"{limits['max_tasks']} tasks, depth {limits['max_lead_depth']}, {limits['max_tool_calls_per_task']} calls per task. "
+                "The cost is not capped: follow it in the log (tokens per step) and stop with Ctrl+C if needed; "
+                "the state is saved, run again without --reset to continue.")
         if pcfg.get("provider") != "mock" and not pcfg.get("base_url", "").startswith(("http://localhost", "http://127.0.0.1")):
             log("Warning: the data queried by the model is sent to its API (external provider).")
-        run = {"started": now_utc(), "profile": profile_name, "provider": pcfg.get("provider"), "model": pcfg.get("model"),
+        run = {"started": now_utc(), "unbounded": bool(args.unbounded), "profile": profile_name, "provider": pcfg.get("provider"), "model": pcfg.get("model"),
                "playbook_sha256": hashlib.sha256(args.playbook.read_bytes()).hexdigest(),
                "guidance_sha256": hashlib.sha256(guidance_path.read_bytes()).hexdigest() if guidance_path.exists() else None}
         agent = Agent(case, db, state, provider, limits, guidance, rules, log, out / "transcript.jsonl",
