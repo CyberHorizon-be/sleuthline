@@ -1,6 +1,6 @@
 {
  "_doc": "Decision rules of the analysis (Sleuthline 2.0b). After the triage steps and after each investigation task, the program evaluates these rules and opens leads; each lead becomes a focused task of the agent. kind = finding: regular expressions on the text of a recorded finding (title, description, analysis, category, MITRE); all of regex_all must match. kind = timeline: regular expression on the description of the timeline and detections (data-driven, before any finding); skipped when every matching record is already cited by a finding. kind = ioc: a recorded IOC that appears in records not cited by any finding (entity graph). priority: high, medium, low. Placeholders of question: {finding_id} {finding_title} {hosts} {count} {sample_refs} {ioc_type} {ioc_value} {extra}. Source of truth: <repository>\\pipeline\\config\\decision_rules.json.",
- "version": "1.0",
+ "version": "1.1",
  "rules": [
   {"id": "remote-logon-internal", "kind": "finding", "priority": "high", "min_severity": "medium",
    "regex_all": ["(?i)(logon ?type[^0-9]{0,3}(10|3)\\b|\\brdp\\b|remote desktop|network logon|4624)", "\\b(10\\.\\d+|192\\.168|172\\.(1[6-9]|2\\d|3[01]))\\.\\d+\\.\\d+"],
@@ -35,8 +35,8 @@
   {"id": "anti-forensics", "kind": "finding", "priority": "medium", "min_severity": "medium",
    "regex_all": ["(?i)(log(s)? (was |were )?clear|\\b1102\\b|wevtutil|timestomp|defender .{0,30}(disabled|off)|tamper|disablerealtimemonitoring|vssadmin|shadow ?cop|T1070|T1562)"],
    "question": "What was the attacker hiding with the evasion of {finding_id} ({finding_title})? Review the activity on the same host in the window before it for actions it was meant to cover, and what remains despite it."},
-  {"id": "staging-exfiltration", "kind": "finding", "priority": "medium", "min_severity": "medium",
-   "regex_all": ["(?i)(staging|exfiltrat|loot|upload|\\.(zip|7z|rar)\\b|archive (created|of)|T1560|T1041|T1048|T1567)"],
+  {"id": "staging-exfiltration", "kind": "finding", "priority": "medium", "min_severity": "high",
+   "regex_all": ["(?i)(\\bstag(ed|ing)\\b|exfiltrat|\\bloot\\b|uploaded to|archive (created|of)|T1560|T1041|T1048|T1567)"],
    "question": "For {finding_id} ({finding_title}): how did the data leave (C2 sessions, cloud uploads, mail, removable media, RDP clipboard / drive), how much, when, and which files were concerned?"},
   {"id": "removable-media", "kind": "finding", "priority": "medium", "min_severity": "medium",
    "regex_all": ["(?i)(usbstor|removable (media|device|drive)|usb (device|drive|key|stick))"],

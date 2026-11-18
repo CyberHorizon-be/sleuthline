@@ -22,6 +22,10 @@ from pathlib import Path
 PRIORITY = {"high": 3, "medium": 2, "low": 1}
 SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 OUTCOMES = ("confirmed", "refuted", "inconclusive")
+# A challenge answers "is there a contradiction?": its own words, so that "confirmed" (the hypothesis) cannot be
+# misread as "contradiction confirmed"
+CHALLENGE_OUTCOMES = ("contradiction_found", "no_contradiction", "inconclusive")
+MAX_CHALLENGES_PER_HYPOTHESIS = 2
 DEFAULT_BOUNDS = {"max_tasks": 30, "max_lead_depth": 3, "max_tool_calls_per_task": 15, "max_tool_calls_per_triage_step": 30}
 
 
@@ -84,6 +88,17 @@ class Leads:
         self.all.append(lead)
         return lead, True
 
+    def same_rule_lead(self, source: str, refs: list, entity_ids: set) -> dict | None:
+        """A lead of the same rule about the same thing (shared reference, or shared specific entity: file, hash,
+        address, URL, domain): the second finding is added to it instead of opening a new lead."""
+        refs = set(refs or [])
+        for x in self.all:
+            if x["source"] != source or x["status"] == "duplicate":
+                continue
+            if refs & set(x.get("refs") or []) or (entity_ids and entity_ids & set(x.get("entity_ids") or [])):
+                return x
+        return None
+
     def open(self) -> list[dict]:
         return [x for x in self.all if x["status"] == "open"]
 
@@ -98,6 +113,19 @@ class Leads:
 def finding_text(f: dict) -> str:
     return " | ".join(str(x) for x in (f.get("title"), f.get("description"), f.get("analysis"), f.get("category"),
                                          " ".join(f.get("mitre") or [])) if x)
+
+
+SPECIFIC_TYPES = ("file", "hash", "ip", "url", "domain")
+
+
+def specific_entities(db, refs: list) -> set:
+    """Entities of these records that identify the subject of a lead (not common, not account / host / file name)."""
+    if not refs or not db.has_table("entity_refs"):
+        return set()
+    rows = db.run("SELECT DISTINCT e.entity_id FROM entity_refs r JOIN entities e ON e.entity_id = r.entity_id "
+                  f"WHERE NOT e.common AND e.type IN ({', '.join(repr(t) for t in SPECIFIC_TYPES)}) "
+                  "AND r.ref IN (SELECT unnest(?))", [list(refs)], 1000)[1]
+    return {r[0] for r in rows}
 
 
 def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: str, data_rules: bool = False,
@@ -119,12 +147,20 @@ def evaluate_rules(rules: list[dict], state, db, leads: Leads, depth: int, now: 
                 if all(re.search(rx, text) for rx in r.get("regex_all", [])):
                     hits.add(key)
                     hosts = f.get("hosts") or []
+                    frefs = [e["ref"] for e in f.get("evidence", [])]
+                    ents = specific_entities(db, frefs)
+                    same = leads.same_rule_lead(f"rule:{r['id']}", frefs, ents)
+                    if same:                       # same subject: one lead, several origins
+                        same.setdefault("also", [])
+                        if f["id"] not in same["also"] and f["id"] != same.get("origin"):
+                            same["also"].append(f["id"])
+                        continue
                     lead, new = leads.add(
                         fill(r["question"], finding_id=f["id"], finding_title=f["title"], hosts=", ".join(hosts) or "?"),
                         f"rule {r['id']} on {f['id']}", prio, f"rule:{r['id']}", f["id"], depth,
-                        refs=[e["ref"] for e in f.get("evidence", [])][:8],
-                        host=hosts[0] if len(hosts) == 1 else None, now=now)
+                        refs=frefs[:8], host=hosts[0] if len(hosts) == 1 else None, now=now)
                     if new:
+                        lead["entity_ids"] = sorted(ents)[:50]
                         created.append(lead)
         elif r["kind"] == "ioc":
             if not db.has_table("entity_refs"):
@@ -232,7 +268,7 @@ def evaluate_hypothesis(h: dict, findings: dict, leads: dict, policy: dict, inde
     if any(f.get("confidence") == "confirmed" for f in con):
         status, conf = "refuted", "confirmed"
         reasons.append("contradicted by confirmed finding(s) " + ", ".join(f["id"] for f in con if f.get("confidence") == "confirmed"))
-    elif ch and ch.get("status") == "done" and ch.get("outcome") == "confirmed":
+    elif ch and ch.get("status") == "done" and ch.get("outcome") == "contradiction_found":
         status, conf = "contested", "possible"
         reasons.append(f"its challenge task {ch['id']} established a contradiction: {str(ch.get('summary') or '')[:300]}")
     elif not sup:
@@ -242,7 +278,7 @@ def evaluate_hypothesis(h: dict, findings: dict, leads: dict, policy: dict, inde
         status = "supported"
         ok_sources = len(sources) >= int(policy.get("min_independent_sources", 2))
         unresolved = [f["id"] for f in con]
-        challenged = (not needs_challenge) or (ch is not None and ch.get("status") == "done" and ch.get("outcome") == "refuted")
+        challenged = (not needs_challenge) or (ch is not None and ch.get("status") == "done" and ch.get("outcome") == "no_contradiction")
         if ok_sources and not unresolved and challenged:
             conf = "confirmed"
         else:
@@ -254,7 +290,7 @@ def evaluate_hypothesis(h: dict, findings: dict, leads: dict, policy: dict, inde
                 reasons.append("unresolved contradicting finding(s) " + ", ".join(unresolved))
             if not challenged:
                 reasons.append("challenge " + (f"{ch['id']} {ch.get('outcome') or ch.get('status')}" if ch else "not run")
-                               + " (a contradiction search with outcome refuted is required)")
+                               + " (a contradiction search ending with no_contradiction is required)")
     h.update(status=status, confidence=conf, reasons=reasons, sources=sources, hosts=hosts,
              first_ts=tss[0] if tss else None, last_ts=tss[-1] if tss else None)
     return h
@@ -264,6 +300,7 @@ def challenge_question(h: dict) -> str:
     return (f"CHALLENGE of {h['id']}: \"{h['statement']}\". What would contradict it: another explanation, a legitimate use "
             "(administrator, software update, backup, the responder's own tools), the same activity before the incident "
             "window, another source host or account, a clock offset that reverses the order of events? Look for it in the "
-            "data. Outcome: confirmed = a contradiction IS established (record it as a finding and link it with "
-            "link_hypothesis, relation contradicts); refuted = you looked for it and there is none (say what you checked); "
-            "inconclusive = the data cannot tell.")
+            "data. End with task_complete and one of these outcomes, which answer the question 'is there a contradiction?' "
+            "(not 'is the hypothesis true?'): contradiction_found = a contradiction IS established (record it as a finding "
+            "and link it with link_hypothesis, relation contradicts); no_contradiction = you looked for it and there is none "
+            "(say what you checked); inconclusive = the data cannot tell.")

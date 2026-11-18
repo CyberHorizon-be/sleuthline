@@ -744,9 +744,11 @@ TOOLS = [
                     "required": ["hypothesis", "finding", "relation"]}},
     {"name": "task_complete", "description": "Ends an investigation task with its outcome.",
      "parameters": {"type": "object", "properties": {
-         "outcome": {"type": "string", "enum": list(decision.OUTCOMES),
-                     "description": "confirmed: the question is answered positively; refuted: checked and not the case; "
-                                    "inconclusive: the data does not allow to answer"},
+         "outcome": {"type": "string", "enum": list(decision.OUTCOMES) + [o for o in decision.CHALLENGE_OUTCOMES
+                                                                          if o not in decision.OUTCOMES],
+                     "description": "Investigation task: confirmed (the question is answered positively), refuted (checked "
+                                    "and not the case), inconclusive (the data does not allow to answer). CHALLENGE task "
+                                    "only: contradiction_found, no_contradiction or inconclusive."},
          "summary": {"type": "string", "description": "answer to the question: what was checked, found, with references"},
          "gaps": {"type": "string"}}, "required": ["outcome", "summary"]}},
     {"name": "step_complete", "description": "Ends the current step with a technical summary.",
@@ -1185,11 +1187,8 @@ class Agent:
         h, new = self.hyps.add(statement, tactic, self.current_step, now_utc())
         for x, r in links:
             self.hyps.link(h, str(x).strip(), r)
-        if new and any(fs[str(x).strip()].get("severity") in self.policy["corroboration_severities"]
-                       for x, r in links if r == "supports") and not self.limits.get("_classic"):
-            lead, created = self.leads.add(decision.challenge_question(h), f"challenge of {h['id']}", "high", "challenge",
-                                           h["id"], self.current_depth, now=now_utc())
-            h["challenge_lead"] = lead["id"]
+            if r == "supports":
+                self.maybe_challenge(h, fs[str(x).strip()])
         self.refresh_hypotheses()
         self.state.save()
         self.log(f"      + hypothesis {h['id']} {h['statement'][:90]}")
@@ -1205,13 +1204,42 @@ class Agent:
         if str(finding).strip() not in {f["id"] for f in self.state.d["findings"]}:
             return f"REFUSED: unknown finding {finding}"
         self.hyps.link(h, str(finding).strip(), relation, note)
+        if relation == "supports":
+            self.maybe_challenge(h, next(f for f in self.state.d["findings"] if f["id"] == str(finding).strip()))
         self.refresh_hypotheses()
         self.state.save()
-        return "OK: " + self.hyp_text(h)
+        return "OK: " + self.hyp_text(h) + (f". Challenge task {h['challenge_lead']} pending." if
+                                           (self.leads_by_id().get(h.get("challenge_lead") or "") or {}).get("status") == "open" else "")
+
+    def leads_by_id(self) -> dict:
+        return {x["id"]: x for x in self.leads.all}
+
+    def maybe_challenge(self, h: dict, finding: dict):
+        """Opens the challenge of a hypothesis when a critical / high finding supports it: at its creation, or when such a
+        finding is linked later. A contested hypothesis is challenged again when new supporting evidence arrives (at most
+        MAX_CHALLENGES_PER_HYPOTHESIS), so that it can leave that state. Challenges are depth 1: they concern the
+        hypothesis, not a thread of the task that recorded it, and are bounded by max_challenge_tasks."""
+        if self.limits.get("_classic") or finding.get("severity") not in self.policy["corroboration_severities"]:
+            return
+        done = h.setdefault("challenges", [])
+        cur = self.leads_by_id().get(h.get("challenge_lead") or "")
+        if cur and not (cur.get("status") == "done" and cur.get("outcome") == "contradiction_found"):
+            return                                   # a challenge is pending or ended without contradiction
+        if len(done) >= decision.MAX_CHALLENGES_PER_HYPOTHESIS:
+            return
+        q = decision.challenge_question(h) + (f" (Challenge #{len(done) + 1}, after the new supporting finding {finding['id']}; "
+                                              f"the previous challenge {cur['id']} found: {str(cur.get('summary') or '')[:300]})"
+                                              if cur else "")
+        lead, _ = self.leads.add(q, f"challenge of {h['id']}", "high", "challenge", h["id"], 1, now=now_utc())
+        h["challenge_lead"] = lead["id"]
+        done.append(lead["id"])
 
     def t_task_complete(self, outcome, summary, gaps=""):
-        if outcome not in decision.OUTCOMES:
-            return f"ERROR: outcome must be one of {list(decision.OUTCOMES)}"
+        lead = next((x for x in self.leads.all if x["id"] == self.current_lead), None)
+        allowed = decision.CHALLENGE_OUTCOMES if lead and lead["source"] == "challenge" else decision.OUTCOMES
+        if outcome not in allowed:
+            return (f"ERROR: outcome must be one of {list(allowed)}"
+                    + (" (a challenge answers 'is there a contradiction?')" if allowed is decision.CHALLENGE_OUTCOMES else ""))
         self.step_done = {"summary": summary, "gaps": gaps, "outcome": outcome}
         return "OK: task completed."
 
@@ -1723,6 +1751,10 @@ def run_tasks(agent, state, db, system: str, limits: dict, log) -> None:
     the bounds; a task can open new leads. Leads beyond a bound are kept with the reason, never dropped."""
     rules = decision.load_rules(DECISION_RULES)
     leads = agent.leads
+    for x in leads.all:                           # task interrupted by an error (network, budget...): run it again
+        if x.get("status") == "running":
+            x["status"] = "open"
+            log(f"  lead {x['id']}: task interrupted in a previous run, investigated again")
     findings = {f["id"]: f for f in state.d["findings"]}
     decision.evaluate_rules(rules, state, db, leads, 1, now_utc(), data_rules=True, log=log)
     state.save()

@@ -1188,13 +1188,17 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
         for x in d["leads"]:
             if x.get("status") == "duplicate":
                 continue
-            outcome = x.get("outcome") if x.get("status") == "done" else f"not investigated: {reasons.get(x['id'], x.get('status'))}"
-            color = {"confirmed": ORANGE, "refuted": MUTED, "inconclusive": NAVY}.get(x.get("outcome")) if x.get("status") == "done" else MUTED
+            outcome = (str(x.get("outcome") or "").replace("_", " ") if x.get("status") == "done"
+                       else f"not investigated: {reasons.get(x['id'], x.get('status'))}")
+            color = {"confirmed": ORANGE, "refuted": MUTED, "inconclusive": NAVY, "contradiction_found": ORANGE,
+                     "no_contradiction": NAVY}.get(x.get("outcome")) if x.get("status") == "done" else MUTED
             o = str(x.get("origin") or "")
             o = (f"step {o.replace('@', ' on ')}" if o[:1].isdigit() else f"task {o}" if o.startswith("L-")
                  else "a question" if o == "question" else o)
             opened = x["source"].replace("rule:", "rule ") + (f", from {o}" if o else "") + f", depth {x['depth']}"
             new_f = sorted({f["id"] for f in d["findings"] if f.get("step") == x.get("task_key")}) if x.get("task_key") else []
+            if x.get("also"):
+                opened += " (also " + ", ".join(x["also"]) + ")"
             rows.append([Cell(x["id"], bold=True, sub=x["priority"]), Cell(opened), Cell(x["question"], sub=x.get("summary") or None),
                          Cell(outcome or "", bold=True, color=color,
                               sub=" · ".join(p for p in (", ".join(new_f), f"{x['tool_calls']} calls" if x.get("tool_calls") else "")
