@@ -1204,6 +1204,33 @@ def build_report(case: Path, out: Path, d: dict, db, guidance: dict, steps: list
                               sub=" · ".join(p for p in (", ".join(new_f), f"{x['tool_calls']} calls" if x.get("tool_calls") else "")
                                              if p) or None)])
         R.table(["Lead", "Opened by", "Question and answer", "Outcome"], rows, [900, 1900, 5038, 1800], size=15, valign="top")
+        R.subhead("Cost and yield per origin")
+        R.para("Model usage of the investigation tasks, grouped by what opened them, and what they produced: the rules "
+               "that bring new evidence and those that only consume budget. Tokens: input (cache included) / output.",
+               size=17, color=MUTED)
+        agg = {}
+        for x in d["leads"]:
+            if x.get("status") == "duplicate":
+                continue
+            g = agg.setdefault(x["source"], {"leads": 0, "run": 0, "skipped": 0, "calls": 0, "tin": 0, "tout": 0,
+                                              "findings": 0, "outcomes": defaultdict(int)})
+            g["leads"] += 1 + len(x.get("also") or [])
+            if x.get("status") == "done":
+                u = x.get("usage") or {}
+                g["run"] += 1
+                g["calls"] += int(x.get("tool_calls") or 0)
+                g["tin"] += int(u.get("input_tokens", 0)) + int(u.get("cache_read_tokens", 0)) + int(u.get("cache_write_tokens", 0))
+                g["tout"] += int(u.get("output_tokens", 0))
+                g["findings"] += sum(1 for f in d["findings"] if f.get("step") == x.get("task_key"))
+                g["outcomes"][str(x.get("outcome") or "?").replace("_", " ")] += 1
+            else:
+                g["skipped"] += 1
+        rows = [[Cell(src.replace("rule:", "rule "), bold=True), str(g["leads"]), f"{g['run']} / {g['skipped']}", str(g["calls"]),
+                 f"{g['tin']:,} / {g['tout']:,}", Cell(str(g["findings"]), bold=g["findings"] > 0, color=None if g["findings"] else MUTED),
+                 ", ".join(f"{v} {k}" for k, v in sorted(g["outcomes"].items()))]
+                for src, g in sorted(agg.items(), key=lambda kv: (-kv[1]["findings"], -kv[1]["tin"]))]
+        R.table(["Origin", "Leads", "Run / not run", "Tool calls", "Tokens", "New findings", "Outcomes"], rows,
+                [2300, 700, 1100, 900, 1900, 1000, 1738], size=15)
 
     appendix("Guidance provided by the analyst")
     R.kv([("Context", guidance["context"].strip() or "none"),

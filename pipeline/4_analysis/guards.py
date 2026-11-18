@@ -33,6 +33,12 @@ def load_policy(cfg: dict | None) -> dict:
     return p
 
 
+# Files that several parsers read, or that hold several artifacts: one source whatever the parser
+CONTAINER_FILES = {"system", "software", "sam", "security", "default", "ntuser.dat", "usrclass.dat", "amcache.hve",
+                   "$mft", "$j", "$logfile", "$usnjrnl:$j", "syscache.hve"}
+CONTAINER_EXT = (".hve", ".edb", ".db", ".sqlite", ".sqlite3", ".dat")
+
+
 def _basename(path: str) -> str:
     return re.split(r"[\\/]", path.strip())[-1].lower()
 
@@ -46,7 +52,13 @@ def source_key(e: dict) -> str:
         source; the image and a disk artifact are two);
       - network: the network captures as a whole (a Suricata alert and the flow it fires on are ONE
         source);
-      - other artifacts: the artifact type (Prefetch, Amcache, MFT, a registry artifact...).
+      - container files read by several parsers or holding several artifacts: the file itself (a registry hive
+        read by RECmd, AppCompatCacheParser or another tool, Amcache.hve, an ESE / SQLite database, $MFT, $J,
+        $LogFile): ShimCache and the Services key of the same SYSTEM hive are ONE source; a user hive is
+        qualified by its folder (the NTUSER.DAT of two users are two sources);
+      - other artifacts: the artifact type (Prefetch, LNK, Jump Lists...).
+    In short: one primary source = one original file / log / memory image / set of captures, whatever the
+    number of parsers, detections or interpretations derived from it.
     In a multi-host case, the key is qualified by the host: the Prefetch of two hosts are two sources."""
     host = e.get("host")
     if host:
@@ -63,6 +75,11 @@ def source_key(e: dict) -> str:
         return "evtx:" + base
     art = str(e.get("artifact") or e.get("table") or "").strip().lower()
     if art.startswith("detection") and base:
+        return "file:" + base
+    if base and (base in CONTAINER_FILES or base.endswith(CONTAINER_EXT)):
+        if base in ("ntuser.dat", "usrclass.dat"):
+            parent = re.split(r"[\\/]", ev.strip().rstrip("\\/"))
+            return "file:" + "/".join(x.lower() for x in parent[-3:])
         return "file:" + base
     return "artifact:" + (art or base or str(e.get("ref", "?")).rpartition("#")[0].lower())
 

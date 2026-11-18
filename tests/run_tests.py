@@ -556,6 +556,16 @@ class TestGuards(unittest.TestCase):
         self.assertEqual(guards.source_key(self.E4688), guards.source_key(self.HAYA))
         self.assertEqual(guards.assess("confirmed", [self.E4688, self.HAYA], self.P, "high")[0], "probable")
 
+    def test_same_file_read_by_two_parsers_is_one_source(self):
+        shim = {"ref": "appcompatcacheparser/a.csv#1", "artifact": "ShimCache", "evidence": "F:\\Windows\\System32\\config\\SYSTEM"}
+        svc = {"ref": "recmd_kroll/k.csv#9", "artifact": "Registry", "evidence": "F:\\Windows\\System32\\config\\SYSTEM"}
+        amc = {"ref": "amcacheparser/x.csv#2", "artifact": "Amcache (files)", "evidence": "F:\\Windows\\AppCompat\\Programs\\Amcache.hve"}
+        self.assertEqual(guards.source_key(shim), guards.source_key(svc))               # one SYSTEM hive
+        self.assertEqual(len(guards.independent_sources([shim, svc, amc])), 2)           # SYSTEM + Amcache.hve
+        u1 = {"ref": "r#1", "artifact": "Registry", "evidence": "F:\\Users\\bob\\NTUSER.DAT"}
+        u2 = {"ref": "r#2", "artifact": "Registry", "evidence": "F:\\Users\\alice\\NTUSER.DAT"}
+        self.assertEqual(len(guards.independent_sources([u1, u2])), 2)                  # two users, two hives
+
     def test_two_independent_sources_confirm(self):
         conf, notes, src = guards.assess("confirmed", [self.PF, self.E4688], self.P, "critical")
         self.assertEqual((conf, notes, len(src)), ("confirmed", [], 2))
@@ -1443,6 +1453,8 @@ class TestEntityGraph(unittest.TestCase):
             self.assertIn("prefetch/p.csv#1", res[0])
             self.assertIn("evtx/e.csv#1", res[0])
             self.assertIn("Entities in the same records", res[0])
+            self.assertIn("subject / executed", res[0])                 # the Prefetch record is about the file...
+            self.assertIn("cited / event_log", res[0])                   # ...the 4688 line only quotes its path
             self.assertIn("evil.exe", res[1])
             self.assertIn("No entity matches", res[2])
             self.assertIn("prefetch/p.csv#1", res[3])                    # Prefetch of EVIL.EXE 21 s before the flow
@@ -1542,7 +1554,7 @@ class TestDecisionGraph(unittest.TestCase):
             with zipfile.ZipFile(next((case / "analysis").glob("report_*.docx"))) as z:
                 xml = z.read("word/document.xml").decode("utf-8")
             for text in ("Decision trace", "Investigation task " + rule_lead["id"], "task limit (2 tasks per case)",
-                         "rule persistence-origin, from F-001, depth 1", "agent, from step 1, depth 1"):
+                         "rule persistence-origin, from F-001, depth 1", "agent, from step 1, depth 1", "Cost and yield per origin"):
                 self.assertIn(text, xml)
 
     def test_depth_limit_and_classic(self):
@@ -1714,6 +1726,35 @@ class TestDecisionAudit(unittest.TestCase):
             self.assertNotEqual(h["challenge_lead"], ch["id"])
             self.assertEqual(h["status"], "supported")
             self.assertEqual(len(h["challenges"]), 2)
+
+
+
+class TestCompareRuns(unittest.TestCase):
+    """compare_runs.py: findings matched on their evidence then their title; lost, new and changed findings."""
+
+    def test_compare(self):
+        import compare_runs
+        a = {"findings": [{"id": "F-001", "title": "EVIL.EXE executed", "severity": "critical", "confidence": "confirmed",
+                           "evidence": [{"ref": "pecmd/p.csv#1"}, {"ref": "evtx/e.csv#4"}]},
+                          {"id": "F-002", "title": "Defender disabled", "severity": "high", "confidence": "confirmed",
+                           "evidence": [{"ref": "evtx/e.csv#9"}]},
+                          {"id": "F-003", "title": "Old USB key", "severity": "low", "confidence": "probable", "evidence": []}],
+             "usage": {"calls": 10, "input_tokens": 100, "output_tokens": 10}}
+        b = {"findings": [{"id": "F-010", "title": "Execution of EVIL", "severity": "critical", "confidence": "probable",
+                           "evidence": [{"ref": "HOST1:pecmd/p.csv#1"}]},
+                          {"id": "F-011", "title": "Defender has been disabled", "severity": "high", "confidence": "confirmed",
+                           "evidence": [{"ref": "evtx/e.csv#77"}]},
+                          {"id": "F-012", "title": "C2 to 203.0.113.9", "severity": "high", "confidence": "confirmed",
+                           "evidence": [{"ref": "suricata/f.jsonl#3"}], "step": "task:L-002"}],
+             "leads": [{"id": "L-002", "status": "done", "outcome": "confirmed"}]}
+        pairs = {f["id"]: (g["id"] if g else None, how) for f, g, how in compare_runs.match(a["findings"], b["findings"])}
+        self.assertEqual(pairs["F-001"], ("F-010", "evidence"))          # host prefix ignored
+        self.assertEqual(pairs["F-002"], ("F-011", "title"))
+        self.assertEqual(pairs["F-003"], (None, ""))
+        md = compare_runs.compare(a, b, "1.2", "2.0")
+        self.assertIn("Findings of 1.2 not found in 2.0 (1, of which 0 critical / high)", md)
+        self.assertIn("F-012** [high/confirmed] C2 to 203.0.113.9 (step task:L-002)", md)
+        self.assertIn("F-001 -> F-010: critical/confirmed -> critical/probable", md)
 
 
 def snapshot(db: Path) -> dict:
