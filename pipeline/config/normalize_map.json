@@ -1,6 +1,6 @@
 {
  "version": "2.2",
- "description": "Mapping of parsing outputs -> DuckDB timeline / detections. Source of truth: <repository>\\pipeline\\config\\normalize_map.json. See the README (Normalization) for the format.",
+ "description": "Mapping of parsing outputs -> DuckDB timeline / detections. Source of truth: <repository>\\pipeline\\config\\normalize_map.json. See docs\\usage.md (Normalization into DuckDB) in the repository for the format.",
  "defaults": {
   "min_ts": "1980-01-01",
   "max_years_ahead": 1,
