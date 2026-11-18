@@ -1,5 +1,11 @@
 # Sleuthline
 
+> **Which version?** The latest **validated** version is **[v1.0.0](https://github.com/CyberHorizon-be/sleuthline/releases/tag/v1.0.0)**: tested end to end on public cases (README of that version: [v1.0.0](https://github.com/CyberHorizon-be/sleuthline/tree/v1.0.0)). The `main` branch holds the next version, **2.0 in testing** (several hosts per case, entity graph, decision graph with investigation tasks, hypotheses and counter-evidence): it passes the automated tests but has not yet been validated on real cases. To install the validated version, clone that tag:
+> ```powershell
+> git clone --branch v1.0.0 https://github.com/CyberHorizon-be/sleuthline.git C:\Sleuthline-setup
+> ```
+> then follow the README of v1.0.0. The command `git clone https://github.com/CyberHorizon-be/sleuthline.git` (without `--branch`) installs `main`, the version in testing.
+
 **A DFIR evidence platform with an AI investigation layer: from a KAPE collection, a memory image and network captures to an evidence-backed incident response report.**
 
 Sleuthline is a Windows DFIR pipeline for an isolated analysis VM. It takes a KAPE triage collection (e.g. `!SANS_Triage`) and, if you have them, a memory image of the machine and network captures of the incident, parses them with recognized forensic tools (Volatility 3 for the memory, Suricata for the network), normalizes every output into a single DuckDB database with a UTC timeline, then lets an LLM agent investigate the case step by step and write a technical Word report in which **every finding cites verifiable records** of the database.
